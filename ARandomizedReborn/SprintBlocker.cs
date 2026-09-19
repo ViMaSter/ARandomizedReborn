@@ -81,10 +81,10 @@ public sealed unsafe class SprintBlocker : IDisposable
             return false;
         }
 
-        if (this.IsSkillLocked(actionType, actionId))
+        if (this.IsSkillLocked(actionType, actionId, out var unlockLevel))
         {
             UIGlobals.PlayChatSoundEffect(11);
-            this.toastGui.ShowError($"Skill is locked above level {this.SkillLevelCap}!");
+            this.toastGui.ShowError($"Skill unlocks at level {unlockLevel}!");
             return false;
         }
 
@@ -101,7 +101,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     private unsafe void UpdateHighlights(IFramework _)
     {
         this.ClearHighlights();
-        if (sprintGeneralActionId == 0 || (!IsBlocking && this.SkillLevelCap >= 100))
+        if ((!IsBlocking && this.SkillLevelCap >= 100) || this.actionLevels.Count == 0)
             return;
 
         foreach (var addonName in ActionBarNames)
@@ -132,13 +132,25 @@ public sealed unsafe class SprintBlocker : IDisposable
         }
     }
 
-    private bool IsSkillLocked(ActionType actionType, uint actionId)
-        => actionType == ActionType.Action && this.SkillLevelCap < 100 &&
-           this.actionLevels.TryGetValue(actionId, out var level) && level > this.SkillLevelCap;
+    private bool IsSkillLocked(ActionType actionType, uint actionId, out byte unlockLevel)
+    {
+        unlockLevel = 0;
+        if (actionType != ActionType.Action || this.SkillLevelCap >= 100 || actionId == 0)
+            return false;
+
+        var adjustedActionId = this.GetAdjustedActionId(actionId);
+        return this.actionLevels.TryGetValue(adjustedActionId, out unlockLevel) && unlockLevel > this.SkillLevelCap;
+    }
 
     private bool IsBlockedAction(uint actionId)
         => (this.IsBlocking && actionId == this.sprintGeneralActionId) ||
-           this.IsSkillLocked(ActionType.Action, actionId);
+           this.IsSkillLocked(ActionType.Action, actionId, out _);
+
+    private uint GetAdjustedActionId(uint actionId)
+    {
+        var actionManager = ActionManager.Instance();
+        return actionManager == null ? actionId : actionManager->GetAdjustedActionId(actionId);
+    }
 
     private unsafe void ClearHighlights()
     {
