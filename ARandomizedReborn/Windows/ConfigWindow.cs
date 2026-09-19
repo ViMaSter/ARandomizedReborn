@@ -10,6 +10,7 @@ namespace ARandomizedReborn.Windows;
 
 public class ConfigWindow : Window, IDisposable
 {
+    private readonly Plugin plugin;
     private readonly Configuration configuration;
 
     // We give this window a constant ID using ###.
@@ -17,6 +18,7 @@ public class ConfigWindow : Window, IDisposable
     // and the window ID will always be "###XYZ counter window" for ImGui
     public ConfigWindow(Plugin plugin) : base("A Wonderful Configuration Window###With a constant ID")
     {
+        this.plugin = plugin;
         Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar |
                 ImGuiWindowFlags.NoScrollWithMouse;
 
@@ -56,6 +58,31 @@ public class ConfigWindow : Window, IDisposable
         if (ImGui.Checkbox("Movable Config Window", ref movable))
         {
             configuration.IsConfigWindowMovable = movable;
+            configuration.Save();
+        }
+
+        var highlightRed = configuration.SprintHighlightRed;
+        if (ImGui.SliderInt("Sprint highlight red", ref highlightRed, 0, 255))
+        {
+            configuration.SprintHighlightRed = highlightRed;
+            this.plugin.SprintBlocker.HighlightRed = highlightRed;
+            configuration.Save();
+        }
+
+        var highlightMultiply = configuration.SprintHighlightMultiply;
+        if (ImGui.SliderInt("Sprint highlight multiply", ref highlightMultiply, 0, 100))
+        {
+            configuration.SprintHighlightMultiply = highlightMultiply;
+            this.plugin.SprintBlocker.HighlightMultiply = highlightMultiply;
+            configuration.Save();
+        }
+
+        if (ImGui.Button("Restore defaults"))
+        {
+            configuration.SprintHighlightRed = 90;
+            configuration.SprintHighlightMultiply = 30;
+            this.plugin.SprintBlocker.HighlightRed = 90;
+            this.plugin.SprintBlocker.HighlightMultiply = 30;
             configuration.Save();
         }
 

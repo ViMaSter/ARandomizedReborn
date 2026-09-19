@@ -16,6 +16,8 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
@@ -35,9 +37,11 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        SprintBlocker = new SprintBlocker(GameInteropProvider, DataManager, Log, ToastGui)
+        SprintBlocker = new SprintBlocker(GameInteropProvider, DataManager, Log, ToastGui, Framework, GameGui)
         {
             IsBlocking = Configuration.DisableSprint,
+            HighlightRed = Configuration.SprintHighlightRed,
+            HighlightMultiply = Configuration.SprintHighlightMultiply,
         };
 
         // You might normally want to embed resources and load them from the manifest stream
