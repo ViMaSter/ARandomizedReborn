@@ -21,6 +21,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     private readonly IFramework framework;
     private readonly IGameGui gameGui;
     private readonly HashSet<nint> highlightedIcons = [];
+    private readonly Dictionary<uint, byte> actionLevels = [];
 
     private static readonly string[] ActionBarNames =
     [
@@ -32,6 +33,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     ["_ActionCross", "_ActionDoubleCrossL", "_ActionDoubleCrossR"];
 
     public bool IsBlocking { get; set; }
+    public int SkillLevelCap { get; set; } = 100;
     public int HighlightRed { get; set; } = 64;
     public int HighlightMultiply { get; set; } = 65;
 
@@ -46,6 +48,9 @@ public sealed unsafe class SprintBlocker : IDisposable
         this.toastGui = toastGui;
         this.framework = framework;
         this.gameGui = gameGui;
+
+        foreach (var row in dataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>())
+            this.actionLevels[row.RowId] = row.ClassJobLevel;
 
         foreach (var row in dataManager.GetExcelSheet<GeneralAction>())
         {
@@ -76,6 +81,13 @@ public sealed unsafe class SprintBlocker : IDisposable
             return false;
         }
 
+        if (this.IsSkillLocked(actionType, actionId))
+        {
+            UIGlobals.PlayChatSoundEffect(11);
+            this.toastGui.ShowError($"Skill is locked above level {this.SkillLevelCap}!");
+            return false;
+        }
+
         return useActionHook.Original(thisPtr, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
     }
 
@@ -89,7 +101,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     private unsafe void UpdateHighlights(IFramework _)
     {
         this.ClearHighlights();
-        if (!IsBlocking || sprintGeneralActionId == 0)
+        if (sprintGeneralActionId == 0 || (!IsBlocking && this.SkillLevelCap >= 100))
             return;
 
         foreach (var addonName in ActionBarNames)
@@ -111,7 +123,7 @@ public sealed unsafe class SprintBlocker : IDisposable
         for (var slotIndex = 0L; slotIndex < actionBar->ActionBarSlotVector.LongCount; slotIndex++)
         {
             var slot = actionBar->ActionBarSlotVector[slotIndex];
-            if (slot.ActionId != sprintGeneralActionId || slot.Icon == null)
+            if (slot.Icon == null || !this.IsBlockedAction((uint)slot.ActionId))
                 continue;
 
             var iconAddress = (nint)slot.Icon;
@@ -119,6 +131,14 @@ public sealed unsafe class SprintBlocker : IDisposable
             this.highlightedIcons.Add(iconAddress);
         }
     }
+
+    private bool IsSkillLocked(ActionType actionType, uint actionId)
+        => actionType == ActionType.Action && this.SkillLevelCap < 100 &&
+           this.actionLevels.TryGetValue(actionId, out var level) && level > this.SkillLevelCap;
+
+    private bool IsBlockedAction(uint actionId)
+        => (this.IsBlocking && actionId == this.sprintGeneralActionId) ||
+           this.IsSkillLocked(ActionType.Action, actionId);
 
     private unsafe void ClearHighlights()
     {

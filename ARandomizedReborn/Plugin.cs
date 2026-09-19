@@ -40,6 +40,7 @@ public sealed class Plugin : IDalamudPlugin
         SprintBlocker = new SprintBlocker(GameInteropProvider, DataManager, Log, ToastGui, Framework, GameGui)
         {
             IsBlocking = Configuration.DisableSprint,
+            SkillLevelCap = Configuration.SkillLevelCap,
             HighlightRed = Configuration.SprintHighlightRed,
             HighlightMultiply = Configuration.SprintHighlightMultiply,
         };
