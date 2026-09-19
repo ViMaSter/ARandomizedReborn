@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Numerics;
+using Dalamud.Game.Gui.Toast;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
+using FFXIVClientStructs.FFXIV.Client.UI;
 
 namespace ARandomizedReborn.Windows;
 
@@ -17,7 +20,7 @@ public class ConfigWindow : Window, IDisposable
         Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar |
                 ImGuiWindowFlags.NoScrollWithMouse;
 
-        Size = new Vector2(232, 90);
+        Size = new Vector2(420, 420);
         SizeCondition = ImGuiCond.Always;
 
         configuration = plugin.Configuration;
@@ -54,6 +57,40 @@ public class ConfigWindow : Window, IDisposable
         {
             configuration.IsConfigWindowMovable = movable;
             configuration.Save();
+        }
+
+        ImGui.Separator();
+        ImGui.Text("Client output tests");
+
+        if (ImGui.Button("Chat"))
+            Plugin.ChatGui.Print("TEST MESSAGE");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Log"))
+            Plugin.Log.Information("TEST MESSAGE");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Big display hint"))
+            Plugin.ToastGui.ShowQuest("TEST MESSAGE", new QuestToastOptions { PlaySound = true });
+
+        ImGui.SameLine();
+        if (ImGui.Button("Notification"))
+        {
+            Plugin.NotificationManager.AddNotification(new Notification
+            {
+                Content = "TEST MESSAGE",
+                Type = NotificationType.Info,
+            });
+        }
+
+        ImGui.Text("Chat chimes");
+        for (uint chimeId = 1; chimeId <= 16; chimeId++)
+        {
+            if (chimeId > 1 && (chimeId - 1) % 4 != 0)
+                ImGui.SameLine();
+
+            if (ImGui.Button($"Chime {chimeId}"))
+                UIGlobals.PlayChatSoundEffect(chimeId);
         }
     }
 }
