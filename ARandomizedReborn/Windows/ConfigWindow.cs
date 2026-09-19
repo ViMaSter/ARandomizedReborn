@@ -70,6 +70,14 @@ public class ConfigWindow : Window, IDisposable
             Plugin.Log.Information("TEST MESSAGE");
 
         ImGui.SameLine();
+        if (ImGui.Button("ShowNormal"))
+            Plugin.ToastGui.ShowNormal("TEST MESSAGE");
+
+        ImGui.SameLine();
+        if (ImGui.Button("ShowError"))
+            Plugin.ToastGui.ShowError("TEST MESSAGE");
+
+        ImGui.SameLine();
         if (ImGui.Button("Big display hint"))
             Plugin.ToastGui.ShowQuest("TEST MESSAGE", new QuestToastOptions { PlaySound = true });
 

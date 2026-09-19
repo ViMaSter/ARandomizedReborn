@@ -2,6 +2,7 @@ using System;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using Lumina.Excel.Sheets;
 
 namespace ARandomizedReborn;
@@ -14,11 +15,14 @@ public sealed unsafe class SprintBlocker : IDisposable
 {
     private readonly Hook<ActionManager.Delegates.UseAction> useActionHook;
     private readonly uint sprintGeneralActionId;
+    private readonly IToastGui toastGui;
 
     public bool IsBlocking { get; set; }
 
-    public SprintBlocker(IGameInteropProvider gameInteropProvider, IDataManager dataManager, IPluginLog log)
+    public SprintBlocker(IGameInteropProvider gameInteropProvider, IDataManager dataManager, IPluginLog log, IToastGui toastGui)
     {
+        this.toastGui = toastGui;
+
         foreach (var row in dataManager.GetExcelSheet<GeneralAction>())
         {
             if (row.Name.ToString() != "Sprint")
@@ -40,7 +44,11 @@ public sealed unsafe class SprintBlocker : IDisposable
     private bool DetourUseAction(ActionManager* thisPtr, ActionType actionType, uint actionId, ulong targetId, uint extraParam, ActionManager.UseActionMode mode, uint comboRouteId, bool* outOptAreaTargeted)
     {
         if (IsBlocking && sprintGeneralActionId != 0 && actionType == ActionType.GeneralAction && actionId == sprintGeneralActionId)
+        {
+            UIGlobals.PlayChatSoundEffect(11);
+            this.toastGui.ShowError("Sprint is diabled!");
             return false;
+        }
 
         return useActionHook.Original(thisPtr, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
     }

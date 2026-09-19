@@ -35,7 +35,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        SprintBlocker = new SprintBlocker(GameInteropProvider, DataManager, Log)
+        SprintBlocker = new SprintBlocker(GameInteropProvider, DataManager, Log, ToastGui)
         {
             IsBlocking = Configuration.DisableSprint,
         };
