@@ -5,11 +5,14 @@ using Dalamud.Hooking;
 using Dalamud.Plugin;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
+using DalamudObjectKind = Dalamud.Game.ClientState.Objects.Enums.ObjectKind;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
+using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using Lumina.Excel.Sheets;
 using Dalamud.Game.Text;
 using Dalamud.Utility;
@@ -28,6 +31,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
     [PluginService] internal static ITargetManager TargetManager { get; private set; } = null!;
+    [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
@@ -45,6 +49,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private Hook<AgentEmote.Delegates.ExecuteEmote> EmoteHook { get; init; }
     private Hook<TargetSystem.Delegates.InteractWithObject> InteractionHook { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
+    private readonly Dictionary<nint, ushort> targetedEmotes = [];
 
     public Plugin()
     {
@@ -88,6 +93,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // Tell the UI system that we want our windows to be drawn through the window system
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
         ChatGui.ChatMessageHandled += OnChatMessage;
+        Framework.Update += OnFrameworkUpdate;
 
         // This adds a button to the plugin installer entry of this plugin which allows
         // toggling the display status of the configuration ui
@@ -107,6 +113,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // Unregister all actions to not leak anything during disposal of plugin
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         ChatGui.ChatMessageHandled -= OnChatMessage;
+        Framework.Update -= OnFrameworkUpdate;
         EmoteHook.Dispose();
         InteractionHook.Dispose();
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
@@ -150,11 +157,53 @@ public sealed unsafe class Plugin : IDalamudPlugin
         EmoteHook.Original(agent, emoteId, playEmoteOption, addToHistory, liveUpdateHistory);
     }
 
+    private unsafe void OnFrameworkUpdate(IFramework _)
+    {
+        var localPlayer = ObjectTable.LocalPlayer;
+        if (localPlayer == null)
+            return;
+
+        var localPlayerId = (ulong)localPlayer.GameObjectId;
+        var seenObjects = new HashSet<nint>();
+
+        foreach (var gameObject in ObjectTable.CharacterManagerObjects)
+        {
+            if (gameObject.ObjectKind != DalamudObjectKind.Pc)
+                continue;
+
+            if (gameObject.Address == localPlayer.Address)
+                continue;
+
+            var character = (Character*)gameObject.Address;
+            var emoteController = &character->EmoteController;
+            var targetId = (ulong)emoteController->Target;
+            var targetMatchesLocal = targetId == localPlayerId || targetId == localPlayer.EntityId;
+            var emoteId = targetMatchesLocal ? emoteController->EmoteId : (ushort)0;
+            var address = gameObject.Address;
+            seenObjects.Add(address);
+
+            if (emoteId != 0 && (!this.targetedEmotes.TryGetValue(address, out var previousEmote) || previousEmote != emoteId))
+            {
+                var emoteName = this.emoteNames.TryGetValue(emoteId, out var name) ? name : $"#{emoteId}";
+                ToastGui.ShowQuest($"{gameObject.Name} used {emoteName} on you");
+                this.targetedEmotes[address] = emoteId;
+            }
+            else if (emoteId == 0)
+            {
+                this.targetedEmotes.Remove(address);
+            }
+        }
+
+        foreach (var address in this.targetedEmotes.Keys.Where(address => !seenObjects.Contains(address)).ToArray())
+            this.targetedEmotes.Remove(address);
+    }
+
     private unsafe ulong OnInteractWithObject(TargetSystem* targetSystem, GameObject* gameObject, bool checkLineOfSight)
     {
-        if (gameObject != null && gameObject->ObjectKind == ObjectKind.EventNpc)
+        var interactedObject = gameObject == null ? null : ObjectTable.CreateObjectReference((nint)gameObject);
+        if (interactedObject?.ObjectKind == DalamudObjectKind.EventNpc)
         {
-            var target = TargetManager.Target?.Name.ToString();
+            var target = interactedObject.Name.ToString();
             if (!string.IsNullOrWhiteSpace(target))
                 ToastGui.ShowQuest($"Interacting with {target}");
         }
