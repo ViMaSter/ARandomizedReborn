@@ -7,7 +7,7 @@ using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using Lumina.Excel.Sheets;
 
-namespace SamplePlugin.Windows;
+namespace ARandomizedReborn.Windows;
 
 public class MainWindow : Window, IDisposable
 {
@@ -39,6 +39,16 @@ public class MainWindow : Window, IDisposable
         if (ImGui.Button("Show Settings"))
         {
             plugin.ToggleConfigUi();
+        }
+
+        ImGui.Spacing();
+
+        var disableSprint = plugin.Configuration.DisableSprint;
+        if (ImGui.Checkbox("Disable Sprint", ref disableSprint))
+        {
+            plugin.Configuration.DisableSprint = disableSprint;
+            plugin.Configuration.Save();
+            plugin.SprintBlocker.IsBlocking = disableSprint;
         }
 
         ImGui.Spacing();
