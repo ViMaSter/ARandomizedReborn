@@ -1,14 +1,23 @@
 ﻿using Dalamud.Game.Command;
+using Dalamud.Game.Chat;
 using Dalamud.IoC;
+using Dalamud.Hooking;
 using Dalamud.Plugin;
+using System.Collections.Generic;
 using System.IO;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using FFXIVClientStructs.FFXIV.Client.Game.Object;
+using Lumina.Excel.Sheets;
+using Dalamud.Game.Text;
+using Dalamud.Utility;
 using ARandomizedReborn.Windows;
 
 namespace ARandomizedReborn;
 
-public sealed class Plugin : IDalamudPlugin
+public sealed unsafe class Plugin : IDalamudPlugin
 {
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
@@ -18,6 +27,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+    [PluginService] internal static ITargetManager TargetManager { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
@@ -32,10 +42,16 @@ public sealed class Plugin : IDalamudPlugin
     public SprintBlocker SprintBlocker { get; init; }
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
+    private Hook<AgentEmote.Delegates.ExecuteEmote> EmoteHook { get; init; }
+    private Hook<TargetSystem.Delegates.InteractWithObject> InteractionHook { get; init; }
+    private readonly Dictionary<ushort, string> emoteNames = [];
 
     public Plugin()
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+
+        foreach (var row in DataManager.GetExcelSheet<Emote>())
+            emoteNames[(ushort)row.RowId] = row.Name.ToString();
 
         SprintBlocker = new SprintBlocker(GameInteropProvider, DataManager, Log, ToastGui, Framework, GameGui)
         {
@@ -51,6 +67,16 @@ public sealed class Plugin : IDalamudPlugin
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, goatImagePath);
 
+        EmoteHook = GameInteropProvider.HookFromAddress<AgentEmote.Delegates.ExecuteEmote>(
+            AgentEmote.MemberFunctionPointers.ExecuteEmote,
+            OnExecuteEmote);
+        EmoteHook.Enable();
+
+        InteractionHook = GameInteropProvider.HookFromAddress<TargetSystem.Delegates.InteractWithObject>(
+            TargetSystem.MemberFunctionPointers.InteractWithObject,
+            OnInteractWithObject);
+        InteractionHook.Enable();
+
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
 
@@ -61,6 +87,7 @@ public sealed class Plugin : IDalamudPlugin
 
         // Tell the UI system that we want our windows to be drawn through the window system
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
+        ChatGui.ChatMessageHandled += OnChatMessage;
 
         // This adds a button to the plugin installer entry of this plugin which allows
         // toggling the display status of the configuration ui
@@ -79,6 +106,9 @@ public sealed class Plugin : IDalamudPlugin
     {
         // Unregister all actions to not leak anything during disposal of plugin
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
+        ChatGui.ChatMessageHandled -= OnChatMessage;
+        EmoteHook.Dispose();
+        InteractionHook.Dispose();
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         
@@ -95,6 +125,41 @@ public sealed class Plugin : IDalamudPlugin
     {
         // In response to the slash command, toggle the display status of our main ui
         MainWindow.Toggle();
+    }
+
+    private void OnChatMessage(IChatMessage message)
+    {
+        if (message.LogKind is XivChatType.NPCDialogue or XivChatType.NPCDialogueAnnouncements)
+        {
+            ToastGui.ShowQuest($"{message.Sender}: {message.Message}");
+        }
+    }
+
+    private unsafe void OnExecuteEmote(
+        AgentEmote* agent,
+        ushort emoteId,
+        EmoteController.PlayEmoteOption* playEmoteOption,
+        bool addToHistory,
+        bool liveUpdateHistory)
+    {
+        var emoteName = this.emoteNames.TryGetValue(emoteId, out var name) ? name : $"#{emoteId}";
+        var target = TargetManager.Target?.Name.ToString();
+        var targetText = string.IsNullOrWhiteSpace(target) ? string.Empty : $" -> {target}";
+        ToastGui.ShowQuest($"Emote {emoteName}{targetText}");
+
+        EmoteHook.Original(agent, emoteId, playEmoteOption, addToHistory, liveUpdateHistory);
+    }
+
+    private unsafe ulong OnInteractWithObject(TargetSystem* targetSystem, GameObject* gameObject, bool checkLineOfSight)
+    {
+        if (gameObject != null && gameObject->ObjectKind == ObjectKind.EventNpc)
+        {
+            var target = TargetManager.Target?.Name.ToString();
+            if (!string.IsNullOrWhiteSpace(target))
+                ToastGui.ShowQuest($"Interacting with {target}");
+        }
+
+        return InteractionHook.Original(targetSystem, gameObject, checkLineOfSight);
     }
     
     public void ToggleConfigUi() => ConfigWindow.Toggle();
