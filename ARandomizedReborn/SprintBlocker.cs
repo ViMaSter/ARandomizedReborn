@@ -32,6 +32,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     private static readonly string[] CrossBarNames =
     ["_ActionCross", "_ActionDoubleCrossL", "_ActionDoubleCrossR"];
 
+    public bool IsEnabled { get; set; }
     public bool IsBlocking { get; set; }
     public int SkillLevelCap { get; set; } = 100;
     public int HighlightRed { get; set; } = 64;
@@ -74,6 +75,9 @@ public sealed unsafe class SprintBlocker : IDisposable
 
     private bool DetourUseAction(ActionManager* thisPtr, ActionType actionType, uint actionId, ulong targetId, uint extraParam, ActionManager.UseActionMode mode, uint comboRouteId, bool* outOptAreaTargeted)
     {
+        if (!this.IsEnabled)
+            return useActionHook.Original(thisPtr, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
+
         if (IsBlocking && sprintGeneralActionId != 0 && actionType == ActionType.GeneralAction && actionId == sprintGeneralActionId)
         {
             UIGlobals.PlayChatSoundEffect(11);
@@ -101,7 +105,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     private unsafe void UpdateHighlights(IFramework _)
     {
         this.ClearHighlights();
-        if ((!IsBlocking && this.SkillLevelCap >= 100) || this.actionLevels.Count == 0)
+        if (!this.IsEnabled || (!IsBlocking && this.SkillLevelCap >= 100) || this.actionLevels.Count == 0)
             return;
 
         foreach (var addonName in ActionBarNames)

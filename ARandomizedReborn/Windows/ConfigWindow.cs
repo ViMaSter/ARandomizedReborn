@@ -65,6 +65,16 @@ public class ConfigWindow : Window, IDisposable
             configuration.Save();
         }
 
+        var enableRandomizer = configuration.EnableRandomizer;
+        if (ImGui.Checkbox("Enable Randomizer", ref enableRandomizer))
+        {
+            this.plugin.SetRandomizerEnabled(enableRandomizer);
+        }
+
+        var disableControls = !configuration.EnableRandomizer;
+        if (disableControls)
+            ImGui.BeginDisabled();
+
         var highlightRed = configuration.SprintHighlightRed;
         if (ImGui.SliderInt("Sprint highlight red", ref highlightRed, 0, 255))
         {
@@ -104,6 +114,9 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
         }
+
+        if (disableControls)
+            ImGui.EndDisabled();
 
         ImGui.Separator();
         ImGui.Text("Client output tests");

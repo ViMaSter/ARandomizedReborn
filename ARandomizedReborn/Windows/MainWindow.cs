@@ -43,6 +43,16 @@ public class MainWindow : Window, IDisposable
 
         ImGui.Spacing();
 
+        var enableRandomizer = plugin.Configuration.EnableRandomizer;
+        if (ImGui.Checkbox("Enable Randomizer", ref enableRandomizer))
+        {
+            plugin.SetRandomizerEnabled(enableRandomizer);
+        }
+
+        var disableControls = !plugin.Configuration.EnableRandomizer;
+        if (disableControls)
+            ImGui.BeginDisabled();
+
         var disableSprint = plugin.Configuration.DisableSprint;
         if (ImGui.Checkbox("Disable Sprint", ref disableSprint))
         {
@@ -50,6 +60,25 @@ public class MainWindow : Window, IDisposable
             plugin.Configuration.Save();
             plugin.SprintBlocker.IsBlocking = disableSprint;
         }
+
+        if (disableControls)
+            ImGui.EndDisabled();
+
+        ImGui.Spacing();
+
+        ImGui.Separator();
+        ImGui.Text("Objectives");
+        foreach (var objective in plugin.ObjectiveTracker.GetStates())
+        {
+            var complete = objective.IsComplete;
+            ImGui.BeginDisabled();
+            ImGui.Checkbox(objective.Definition.DisplayName, ref complete);
+            ImGui.EndDisabled();
+            ImGui.TextWrapped(objective.Definition.Description);
+        }
+
+        if (ImGui.Button("Reset State"))
+            plugin.ObjectiveTracker.Reset();
 
         ImGui.Spacing();
 

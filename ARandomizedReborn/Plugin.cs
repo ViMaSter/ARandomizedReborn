@@ -44,9 +44,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public readonly WindowSystem WindowSystem = new("ARandomizedReborn");
     public SprintBlocker SprintBlocker { get; init; }
+    public ObjectiveTracker ObjectiveTracker { get; init; }
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
-    private Hook<AgentEmote.Delegates.ExecuteEmote> EmoteHook { get; init; }
     private Hook<TargetSystem.Delegates.InteractWithObject> InteractionHook { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
     private readonly Dictionary<nint, ushort> targetedEmotes = [];
@@ -60,22 +60,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         SprintBlocker = new SprintBlocker(GameInteropProvider, DataManager, Log, ToastGui, Framework, GameGui)
         {
+            IsEnabled = Configuration.EnableRandomizer,
             IsBlocking = Configuration.DisableSprint,
             SkillLevelCap = Configuration.SkillLevelCap,
             HighlightRed = Configuration.SprintHighlightRed,
             HighlightMultiply = Configuration.SprintHighlightMultiply,
         };
 
+        ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ToastGui, Log, Configuration);
+        ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
+
         // You might normally want to embed resources and load them from the manifest stream
         var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, goatImagePath);
-
-        EmoteHook = GameInteropProvider.HookFromAddress<AgentEmote.Delegates.ExecuteEmote>(
-            AgentEmote.MemberFunctionPointers.ExecuteEmote,
-            OnExecuteEmote);
-        EmoteHook.Enable();
 
         InteractionHook = GameInteropProvider.HookFromAddress<TargetSystem.Delegates.InteractWithObject>(
             TargetSystem.MemberFunctionPointers.InteractWithObject,
@@ -114,7 +113,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         ChatGui.ChatMessageHandled -= OnChatMessage;
         Framework.Update -= OnFrameworkUpdate;
-        EmoteHook.Dispose();
         InteractionHook.Dispose();
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
@@ -124,6 +122,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ConfigWindow.Dispose();
         MainWindow.Dispose();
         SprintBlocker.Dispose();
+        ObjectiveTracker.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
     }
@@ -140,21 +139,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             ToastGui.ShowQuest($"{message.Sender}: {message.Message}");
         }
-    }
-
-    private unsafe void OnExecuteEmote(
-        AgentEmote* agent,
-        ushort emoteId,
-        EmoteController.PlayEmoteOption* playEmoteOption,
-        bool addToHistory,
-        bool liveUpdateHistory)
-    {
-        var emoteName = this.emoteNames.TryGetValue(emoteId, out var name) ? name : $"#{emoteId}";
-        var target = TargetManager.Target?.Name.ToString();
-        var targetText = string.IsNullOrWhiteSpace(target) ? string.Empty : $" -> {target}";
-        ToastGui.ShowQuest($"Emote {emoteName}{targetText}");
-
-        EmoteHook.Original(agent, emoteId, playEmoteOption, addToHistory, liveUpdateHistory);
     }
 
     private unsafe void OnFrameworkUpdate(IFramework _)
@@ -213,4 +197,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
     
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();
+
+    public void SetRandomizerEnabled(bool enabled)
+    {
+        Configuration.EnableRandomizer = enabled;
+        SprintBlocker.IsEnabled = enabled;
+        ObjectiveTracker.SetEnabled(enabled);
+        Configuration.Save();
+    }
 }
