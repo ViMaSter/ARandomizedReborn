@@ -43,11 +43,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("ARandomizedReborn");
     public SprintBlocker SprintBlocker { get; init; }
     public ObjectiveTracker ObjectiveTracker { get; init; }
+    public BingoSession BingoSession { get; init; }
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
     public AgentRestrictionManager AgentRestrictionManager { get; init; }
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
+    private BingoWindow BingoWindow { get; init; }
+    private DebugWindow DebugWindow { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
     private readonly Dictionary<nint, ushort> targetedEmotes = [];
 
@@ -72,8 +75,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
             HighlightMultiply = Configuration.SprintHighlightMultiply,
         };
 
-        ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ToastGui, Log, Configuration);
+        ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, Log, ReportCheck);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
+
+        BingoSession = new BingoSession(Configuration, ApplyUnlockState, Notify);
 
         InteractionRestrictionManager = new InteractionRestrictionManager(GameInteropProvider, ToastGui, Configuration);
         InteractionRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
@@ -89,9 +94,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, goatImagePath);
+        BingoWindow = new BingoWindow(this);
+        DebugWindow = new DebugWindow(this);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
+        WindowSystem.AddWindow(BingoWindow);
+        WindowSystem.AddWindow(DebugWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -129,8 +138,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         ConfigWindow.Dispose();
         MainWindow.Dispose();
+        BingoWindow.Dispose();
+        DebugWindow.Dispose();
         SprintBlocker.Dispose();
         ObjectiveTracker.Dispose();
+        BingoSession.Dispose();
         InteractionRestrictionManager.Dispose();
         UiRestrictionManager.Dispose();
         AgentRestrictionManager.Dispose();
@@ -195,6 +207,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();
+    public void ToggleBingoUi() => BingoWindow.Toggle();
+    public void ToggleDebugUi() => DebugWindow.Toggle();
+
+    public void StartNewSession(BingoDifficulty difficulty)
+        => _ = BingoSession.StartNewSessionAsync(difficulty, action => Framework.RunOnFrameworkThread(action));
+
+    public void ResetProgress() => BingoSession.ResetProgressOnly();
+
+    public void CompleteCheckManually(string checkId) => BingoSession.TryCompleteCheck(checkId, manualOverride: true);
+
+    /// <summary>Only counts automatic detections while the randomizer is actually running.</summary>
+    private bool ReportCheck(string checkId)
+        => Configuration.EnableRandomizer && BingoSession.TryCompleteCheck(checkId, manualOverride: false);
+
+    private void Notify(string message)
+    {
+        ToastGui.ShowQuest(message);
+        Log.Information(message);
+    }
 
     public void SetRandomizerEnabled(bool enabled)
     {

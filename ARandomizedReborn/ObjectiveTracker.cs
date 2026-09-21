@@ -9,27 +9,16 @@ using Lumina.Excel.Sheets;
 
 namespace ARandomizedReborn;
 
-public sealed record ObjectiveDefinition(string Id, string DisplayName, string Description);
-
-public sealed record ObjectiveState(ObjectiveDefinition Definition, bool IsComplete);
-
+/// <summary>Watches the game for the checks that can be detected automatically.</summary>
 public sealed unsafe class ObjectiveTracker : IDisposable
 {
-    public static readonly ObjectiveDefinition PointAtBlueAlisaie = new(
-        "point-blue-alisaie",
-        "/point at Blue Alisaie",
-        "Find Alisae, select her and type /point or use the 'Point' emote.");
-
-    public static readonly ObjectiveDefinition PetGrahaTia = new(
-        "pet-graha-tia",
-        "Pet the certified best boy",
-        "Find G'raha Tia, select him and type /pet or use the 'Pet' emote.");
+    private const string PointAtBlueAlisaieId = "point-blue-alisaie";
+    private const string PetGrahaTiaId = "pet-graha-tia";
 
     private readonly IGameInteropProvider gameInteropProvider;
     private readonly ITargetManager targetManager;
-    private readonly IToastGui toastGui;
     private readonly IPluginLog log;
-    private readonly Configuration configuration;
+    private readonly Func<string, bool> reportCheck;
     private readonly Dictionary<ushort, string> emoteNames = [];
     private Hook<AgentEmote.Delegates.ExecuteEmote>? emoteHook;
 
@@ -37,26 +26,17 @@ public sealed unsafe class ObjectiveTracker : IDisposable
         IGameInteropProvider gameInteropProvider,
         IDataManager dataManager,
         ITargetManager targetManager,
-        IToastGui toastGui,
         IPluginLog log,
-        Configuration configuration)
+        Func<string, bool> reportCheck)
     {
         this.gameInteropProvider = gameInteropProvider;
         this.targetManager = targetManager;
-        this.toastGui = toastGui;
         this.log = log;
-        this.configuration = configuration;
+        this.reportCheck = reportCheck;
 
         foreach (var row in dataManager.GetExcelSheet<Emote>(ClientLanguage.English))
             this.emoteNames[(ushort)row.RowId] = row.Name.ToString();
     }
-
-    public IReadOnlyList<ObjectiveState> GetStates()
-        =>
-        [
-            new ObjectiveState(PointAtBlueAlisaie, this.configuration.PointAtBlueAlisaieComplete),
-            new ObjectiveState(PetGrahaTia, this.configuration.PetGrahaTiaComplete),
-        ];
 
     public void SetEnabled(bool enabled)
     {
@@ -67,13 +47,6 @@ public sealed unsafe class ObjectiveTracker : IDisposable
         }
 
         this.DisableHooks();
-    }
-
-    public void Reset()
-    {
-        this.configuration.PointAtBlueAlisaieComplete = false;
-        this.configuration.PetGrahaTiaComplete = false;
-        this.configuration.Save();
     }
 
     public void Dispose()
@@ -108,57 +81,30 @@ public sealed unsafe class ObjectiveTracker : IDisposable
         bool addToHistory,
         bool liveUpdateHistory)
     {
-        this.TryUpdatePointAtBlueAlisaie(emoteId);
-        this.TryUpdatePetGrahaTia(emoteId);
+        this.TryTargetedEmote(emoteId, "Point", IsBlueAlisaie, PointAtBlueAlisaieId);
+        this.TryTargetedEmote(emoteId, "Pet", IsGrahaTia, PetGrahaTiaId);
         this.emoteHook!.Original(agent, emoteId, playEmoteOption, addToHistory, liveUpdateHistory);
     }
 
-    private void TryUpdatePointAtBlueAlisaie(ushort emoteId)
+    private void TryTargetedEmote(ushort emoteId, string expectedEmote, Func<string, bool> targetMatches, string checkId)
     {
-        if (this.configuration.PointAtBlueAlisaieComplete)
-            return;
-
         var emoteName = this.emoteNames.TryGetValue(emoteId, out var name) ? name : string.Empty;
-        if (!string.Equals(emoteName, "Point", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(emoteName, expectedEmote, StringComparison.OrdinalIgnoreCase))
             return;
 
         var targetName = this.targetManager.Target?.Name.ToString();
-        if (string.IsNullOrWhiteSpace(targetName) || !IsBlueAlisaie(targetName))
+        if (string.IsNullOrWhiteSpace(targetName) || !targetMatches(targetName))
             return;
 
-        this.configuration.PointAtBlueAlisaieComplete = true;
-        this.configuration.Save();
-        this.toastGui.ShowQuest($"Objective complete: {PointAtBlueAlisaie.DisplayName}");
-        this.log.Information("Objective completed: {ObjectiveId}", PointAtBlueAlisaie.Id);
-    }
-
-    private void TryUpdatePetGrahaTia(ushort emoteId)
-    {
-        if (this.configuration.PetGrahaTiaComplete)
-            return;
-
-        var emoteName = this.emoteNames.TryGetValue(emoteId, out var name) ? name : string.Empty;
-        if (!string.Equals(emoteName, "Pet", StringComparison.OrdinalIgnoreCase))
-            return;
-
-        var targetName = this.targetManager.Target?.Name.ToString();
-        if (string.IsNullOrWhiteSpace(targetName) || !IsGrahaTia(targetName))
-            return;
-
-        this.configuration.PetGrahaTiaComplete = true;
-        this.configuration.Save();
-        this.toastGui.ShowQuest($"Objective complete: {PetGrahaTia.DisplayName}");
-        this.log.Information("Objective completed: {ObjectiveId}", PetGrahaTia.Id);
+        if (this.reportCheck(checkId))
+            this.log.Information("Check completed: {CheckId}", checkId);
     }
 
     private static bool IsBlueAlisaie(string targetName)
-        => targetName.Contains("Blue Alisaie", StringComparison.OrdinalIgnoreCase) ||
-           targetName.Contains("Alisaie", StringComparison.OrdinalIgnoreCase) ||
+        => targetName.Contains("Alisaie", StringComparison.OrdinalIgnoreCase) ||
            targetName.Contains("Alisae", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsGrahaTia(string targetName)
-        => targetName.Contains("G'raha Tia", StringComparison.OrdinalIgnoreCase) ||
-           targetName.Contains("Graha Tia", StringComparison.OrdinalIgnoreCase) ||
-           targetName.Contains("G'raha", StringComparison.OrdinalIgnoreCase) ||
+        => targetName.Contains("G'raha", StringComparison.OrdinalIgnoreCase) ||
            targetName.Contains("Graha", StringComparison.OrdinalIgnoreCase);
 }

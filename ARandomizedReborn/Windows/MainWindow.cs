@@ -42,6 +42,12 @@ public class MainWindow : Window, IDisposable
             plugin.ToggleConfigUi();
         }
 
+        ImGui.SameLine();
+        if (ImGui.Button("Show Bingo Board"))
+        {
+            plugin.ToggleBingoUi();
+        }
+
         ImGui.Spacing();
 
         var enableRandomizer = plugin.Configuration.EnableRandomizer;
@@ -70,18 +76,18 @@ public class MainWindow : Window, IDisposable
         ImGui.Spacing();
 
         ImGui.Separator();
-        ImGui.Text("Objectives");
-        foreach (var objective in plugin.ObjectiveTracker.GetStates())
+        ImGui.Text("Checks");
+        foreach (var status in plugin.BingoSession.GetCheckStatuses())
         {
-            var complete = objective.IsComplete;
+            var complete = status.IsComplete;
             ImGui.BeginDisabled();
-            ImGui.Checkbox(objective.Definition.DisplayName, ref complete);
+            ImGui.Checkbox($"{status.Definition.DisplayName}##check-{status.Definition.Id}", ref complete);
             ImGui.EndDisabled();
-            ImGui.TextWrapped(objective.Definition.Description);
+            ImGui.TextWrapped(status.Definition.Description);
         }
 
         if (ImGui.Button("Reset State"))
-            plugin.ObjectiveTracker.Reset();
+            plugin.ResetProgress();
 
         ImGui.Spacing();
 

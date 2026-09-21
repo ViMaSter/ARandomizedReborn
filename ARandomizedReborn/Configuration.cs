@@ -1,5 +1,6 @@
 ﻿using Dalamud.Configuration;
 using System;
+using System.Collections.Generic;
 
 namespace ARandomizedReborn;
 
@@ -28,8 +29,11 @@ public class Configuration : IPluginConfiguration
     public bool UnlockMounts { get; set; } = false;
     public bool UnlockSprint { get; set; } = false;
     public bool UnlockTeleportReturn { get; set; } = false;
-    public bool PointAtBlueAlisaieComplete { get; set; } = false;
-    public bool PetGrahaTiaComplete { get; set; } = false;
+    public BingoDifficulty BingoDifficulty { get; set; } = BingoDifficulty.Medium;
+    public List<BingoCell> BingoBoard { get; set; } = [];
+    public HashSet<string> CompletedChecks { get; set; } = [];
+    public HashSet<string> ManuallyCompletedChecks { get; set; } = [];
+    public bool BingoWon { get; set; } = false;
     public int SkillLevelCap { get; set; } = 100;
     public int SprintHighlightRed { get; set; } = 90;
     public int SprintHighlightMultiply { get; set; } = 30;
