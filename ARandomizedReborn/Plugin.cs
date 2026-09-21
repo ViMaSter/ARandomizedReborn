@@ -33,6 +33,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
+    [PluginService] internal static IAgentLifecycle AgentLifecycle { get; private set; } = null!;
 
     private const string CommandName = "/pmycommand";
 
@@ -43,6 +44,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public ObjectiveTracker ObjectiveTracker { get; init; }
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
+    public AgentRestrictionManager AgentRestrictionManager { get; init; }
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
@@ -72,11 +74,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ToastGui, Log, Configuration);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
 
-    InteractionRestrictionManager = new InteractionRestrictionManager(GameInteropProvider, ToastGui, Configuration);
-    InteractionRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
+        InteractionRestrictionManager = new InteractionRestrictionManager(GameInteropProvider, ToastGui, Configuration);
+        InteractionRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
 
-    UiRestrictionManager = new UiRestrictionManager(AddonLifecycle, Configuration);
-    UiRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
+        UiRestrictionManager = new UiRestrictionManager(AddonLifecycle, DataManager, Configuration);
+        UiRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
+
+        AgentRestrictionManager = new AgentRestrictionManager(AgentLifecycle, ToastGui, Configuration);
+        AgentRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
 
         // You might normally want to embed resources and load them from the manifest stream
         var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
@@ -127,6 +132,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ObjectiveTracker.Dispose();
         InteractionRestrictionManager.Dispose();
         UiRestrictionManager.Dispose();
+        AgentRestrictionManager.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
     }
@@ -196,6 +202,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ObjectiveTracker.SetEnabled(enabled);
         InteractionRestrictionManager.SetEnabled(enabled);
         UiRestrictionManager.SetEnabled(enabled);
+        AgentRestrictionManager.SetEnabled(enabled);
         Configuration.Save();
     }
 

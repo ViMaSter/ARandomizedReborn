@@ -19,6 +19,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     private readonly uint sprintGeneralActionId;
     private readonly uint teleportGeneralActionId;
     private readonly uint returnGeneralActionId;
+    private readonly uint gysahlGreensItemId;
     private readonly IToastGui toastGui;
     private readonly IFramework framework;
     private readonly IGameGui gameGui;
@@ -76,12 +77,23 @@ public sealed unsafe class SprintBlocker : IDisposable
             }
         }
 
+        foreach (var row in dataManager.GetExcelSheet<Item>())
+        {
+            if (!string.Equals(row.Name.ToString(), "Gysahl Greens", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            gysahlGreensItemId = row.RowId;
+            break;
+        }
+
         if (sprintGeneralActionId == 0)
             log.Warning("Could not resolve the Sprint GeneralAction row; Sprint blocking will be unavailable.");
         if (teleportGeneralActionId == 0)
             log.Warning("Could not resolve the Teleport GeneralAction row; Teleport blocking will be unavailable.");
         if (returnGeneralActionId == 0)
             log.Warning("Could not resolve the Return GeneralAction row; Return blocking will be unavailable.");
+        if (gysahlGreensItemId == 0)
+            log.Warning("Could not resolve the Gysahl Greens Item row; Gysahl Greens blocking will be unavailable.");
 
         useActionHook = gameInteropProvider.HookFromAddress<ActionManager.Delegates.UseAction>(
             ActionManager.Addresses.UseAction.Value,
@@ -199,6 +211,18 @@ public sealed unsafe class SprintBlocker : IDisposable
         if (!this.UnlockMounts && actionType == ActionType.Mount)
         {
             lockName = "Mounts";
+            return true;
+        }
+
+        if (!this.UnlockMounts && actionType is ActionType.Companion or ActionType.BuddyAction)
+        {
+            lockName = "mount + chocobo";
+            return true;
+        }
+
+        if (!this.UnlockMounts && actionType == ActionType.Item && this.gysahlGreensItemId != 0 && actionId == this.gysahlGreensItemId)
+        {
+            lockName = "Gysahl Greens";
             return true;
         }
 
