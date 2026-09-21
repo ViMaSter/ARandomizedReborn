@@ -4,7 +4,6 @@ using Dalamud.Game;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
@@ -36,7 +35,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] internal static IAgentLifecycle AgentLifecycle { get; private set; } = null!;
 
-    private const string CommandName = "/pmycommand";
+    private const string CommandName = "/randomizer";
 
     public Configuration Configuration { get; init; }
 
@@ -89,11 +88,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         AgentRestrictionManager = new AgentRestrictionManager(AgentLifecycle, ToastGui, Configuration);
         AgentRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
 
-        // You might normally want to embed resources and load them from the manifest stream
-        var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
-
         ConfigWindow = new ConfigWindow(this);
-        MainWindow = new MainWindow(this, goatImagePath);
+        MainWindow = new MainWindow(this);
         BingoWindow = new BingoWindow(this);
         DebugWindow = new DebugWindow(this);
 
@@ -104,7 +100,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "A useful message to display in /xlhelp"
+            HelpMessage = "Opens the A Randomized Reborn window."
         });
 
         // Tell the UI system that we want our windows to be drawn through the window system
@@ -118,11 +114,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         // Adds another button doing the same but for the main ui of the plugin
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
-
-        // Add a simple message to the log with level set to information
-        // Use /xllog to open the log window in-game
-        // Example Output: 00:57:54.959 | INF | [SamplePlugin] ===A cool log message from Sample Plugin===
-        Log.Information($"===A cool log message from {PluginInterface.Manifest.Name}===");
     }
 
     public void Dispose()

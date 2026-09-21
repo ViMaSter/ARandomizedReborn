@@ -5,17 +5,9 @@
     <!-- Manifest fields (see https://github.com/goatcorp/DalamudPackager/blob/827d88dc/DalamudPackager/DalamudPackager.cs#L420) -->
     <Author>ViMaSter</Author>
     <Name>A Randomized Reborn</Name>
-    <Punchline>A short one-liner that shows up in /xlplugins.</Punchline>
-    <Description>A brief overview of what your plugin does, highlighting its key features.
-This is shown when the user expands the plugin entry in /xlplugins.</Description>
+    <Punchline>Turn FFXIV into a randomizer: everything is locked until you clear bingo checks.</Punchline>
+    <Description>Locks common conveniences (sprint, teleport, mounts, maps, duties and more) behind a 4x4 bingo board. Clear a check to earn an unlock, complete a row, column or diagonal to win.</Description>
     <RepoUrl>https://github.com/ViMaSter/ARandomizedReborn</RepoUrl>
     <Tags>randomizer</Tags>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Content Include="..\Data\goat.png">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Visible>false</Visible>
-    </Content>
-  </ItemGroup>
 </Project>

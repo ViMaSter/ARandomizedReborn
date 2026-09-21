@@ -10,7 +10,6 @@ public class Configuration : IPluginConfiguration
     public int Version { get; set; } = 0;
 
     public bool IsConfigWindowMovable { get; set; } = true;
-    public bool SomePropertyToBeSavedAndWithADefault { get; set; } = true;
     public bool EnableRandomizer { get; set; } = false;
     public bool DisableSprint { get; set; } = false;
     public bool UnlockHousing { get; set; } = false;
