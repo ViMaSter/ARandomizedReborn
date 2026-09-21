@@ -1,6 +1,7 @@
 using System;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
+using Dalamud.Game;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Enums;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -239,7 +240,7 @@ public sealed class UiRestrictionManager : IDisposable
 
     private DutyRestrictionKind GetContentFinderConditionKind(uint rowId)
     {
-        if (!this.dataManager.GetExcelSheet<ContentFinderCondition>().TryGetRow(rowId, out var row))
+        if (!this.dataManager.GetExcelSheet<ContentFinderCondition>(ClientLanguage.English).TryGetRow(rowId, out var row))
             return DutyRestrictionKind.Unknown;
 
         var intendedUse = this.GetTerritoryIntendedUse(row);
@@ -258,7 +259,7 @@ public sealed class UiRestrictionManager : IDisposable
             return null;
 
         var territoryTypeRowId = GetRowRefId(territoryTypeRef);
-        if (territoryTypeRowId == 0 || !this.dataManager.GetExcelSheet<TerritoryType>().TryGetRow(territoryTypeRowId, out var territoryType))
+        if (territoryTypeRowId == 0 || !this.dataManager.GetExcelSheet<TerritoryType>(ClientLanguage.English).TryGetRow(territoryTypeRowId, out var territoryType))
             return null;
 
         var intendedUseProperty = typeof(TerritoryType).GetProperty("TerritoryIntendedUse");

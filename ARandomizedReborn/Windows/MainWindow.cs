@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game;
 using Dalamud.Interface.Textures;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
@@ -147,7 +148,7 @@ public class MainWindow : Window, IDisposable
                 
                 // Example for querying Lumina, getting the name of our current area.
                 var territoryId = Plugin.ClientState.TerritoryType;
-                if (Plugin.DataManager.GetExcelSheet<TerritoryType>().TryGetRow(territoryId, out var territoryRow))
+                if (Plugin.DataManager.GetExcelSheet<TerritoryType>(ClientLanguage.English).TryGetRow(territoryId, out var territoryRow))
                 {
                     ImGui.Text($"Current location:");
                     ImGui.SameLine(120 * ImGuiHelpers.GlobalScale);

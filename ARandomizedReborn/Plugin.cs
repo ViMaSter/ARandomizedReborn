@@ -1,5 +1,6 @@
 ﻿using Dalamud.Game.Command;
 using Dalamud.Game.Chat;
+using Dalamud.Game;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using System.Collections.Generic;
@@ -54,7 +55,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        foreach (var row in DataManager.GetExcelSheet<Emote>())
+        foreach (var row in DataManager.GetExcelSheet<Emote>(ClientLanguage.English))
             emoteNames[(ushort)row.RowId] = row.Name.ToString();
 
         SprintBlocker = new SprintBlocker(GameInteropProvider, DataManager, Log, ToastGui, Framework, GameGui)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Dalamud.Game;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
@@ -46,7 +47,7 @@ public sealed unsafe class ObjectiveTracker : IDisposable
         this.log = log;
         this.configuration = configuration;
 
-        foreach (var row in dataManager.GetExcelSheet<Emote>())
+        foreach (var row in dataManager.GetExcelSheet<Emote>(ClientLanguage.English))
             this.emoteNames[(ushort)row.RowId] = row.Name.ToString();
     }
 

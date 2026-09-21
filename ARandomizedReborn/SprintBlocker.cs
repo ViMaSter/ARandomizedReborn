@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Dalamud.Game;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -58,10 +59,10 @@ public sealed unsafe class SprintBlocker : IDisposable
         this.framework = framework;
         this.gameGui = gameGui;
 
-        foreach (var row in dataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>())
+        foreach (var row in dataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>(ClientLanguage.English))
             this.actionLevels[row.RowId] = row.ClassJobLevel;
 
-        foreach (var row in dataManager.GetExcelSheet<GeneralAction>())
+        foreach (var row in dataManager.GetExcelSheet<GeneralAction>(ClientLanguage.English))
         {
             switch (row.Name.ToString())
             {
@@ -77,7 +78,7 @@ public sealed unsafe class SprintBlocker : IDisposable
             }
         }
 
-        foreach (var row in dataManager.GetExcelSheet<Item>())
+        foreach (var row in dataManager.GetExcelSheet<Item>(ClientLanguage.English))
         {
             if (!string.Equals(row.Name.ToString(), "Gysahl Greens", StringComparison.OrdinalIgnoreCase))
                 continue;
