@@ -53,12 +53,14 @@ public class MainWindow : Window, IDisposable
         if (disableControls)
             ImGui.BeginDisabled();
 
-        var disableSprint = plugin.Configuration.DisableSprint;
-        if (ImGui.Checkbox("Disable Sprint", ref disableSprint))
+        ImGui.Text("Unlocks");
+        foreach (var unlock in plugin.GetUnlockStates())
         {
-            plugin.Configuration.DisableSprint = disableSprint;
-            plugin.Configuration.Save();
-            plugin.SprintBlocker.IsBlocking = disableSprint;
+            var unlocked = unlock.IsUnlocked;
+            if (ImGui.Checkbox(unlock.Definition.DisplayName, ref unlocked))
+                plugin.SetUnlockState(unlock.Definition.Key, unlocked);
+
+            ImGui.TextWrapped(unlock.Definition.Description);
         }
 
         if (disableControls)

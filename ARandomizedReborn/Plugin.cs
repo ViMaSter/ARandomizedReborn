@@ -1,7 +1,6 @@
 ﻿using Dalamud.Game.Command;
 using Dalamud.Game.Chat;
 using Dalamud.IoC;
-using Dalamud.Hooking;
 using Dalamud.Plugin;
 using System.Collections.Generic;
 using System.IO;
@@ -9,13 +8,9 @@ using System.Linq;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
 using DalamudObjectKind = Dalamud.Game.ClientState.Objects.Enums.ObjectKind;
-using FFXIVClientStructs.FFXIV.Client.UI.Agent;
-using FFXIVClientStructs.FFXIV.Client.Game.Control;
-using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using Lumina.Excel.Sheets;
 using Dalamud.Game.Text;
-using Dalamud.Utility;
 using ARandomizedReborn.Windows;
 
 namespace ARandomizedReborn;
@@ -37,6 +32,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
+    [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
 
     private const string CommandName = "/pmycommand";
 
@@ -45,9 +41,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("ARandomizedReborn");
     public SprintBlocker SprintBlocker { get; init; }
     public ObjectiveTracker ObjectiveTracker { get; init; }
+    public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
+    public UiRestrictionManager UiRestrictionManager { get; init; }
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
-    private Hook<TargetSystem.Delegates.InteractWithObject> InteractionHook { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
     private readonly Dictionary<nint, ushort> targetedEmotes = [];
 
@@ -62,6 +59,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             IsEnabled = Configuration.EnableRandomizer,
             IsBlocking = Configuration.DisableSprint,
+            UnlockSprint = Configuration.UnlockSprint,
+            UnlockTeleportReturn = Configuration.UnlockTeleportReturn,
+            UnlockMounts = Configuration.UnlockMounts,
+            UnlockGatherers = Configuration.UnlockGatherers,
+            UnlockCrafters = Configuration.UnlockCrafters,
             SkillLevelCap = Configuration.SkillLevelCap,
             HighlightRed = Configuration.SprintHighlightRed,
             HighlightMultiply = Configuration.SprintHighlightMultiply,
@@ -70,16 +72,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ToastGui, Log, Configuration);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
 
+    InteractionRestrictionManager = new InteractionRestrictionManager(GameInteropProvider, ToastGui, Configuration);
+    InteractionRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
+
+    UiRestrictionManager = new UiRestrictionManager(AddonLifecycle, Configuration);
+    UiRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
+
         // You might normally want to embed resources and load them from the manifest stream
         var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, goatImagePath);
-
-        InteractionHook = GameInteropProvider.HookFromAddress<TargetSystem.Delegates.InteractWithObject>(
-            TargetSystem.MemberFunctionPointers.InteractWithObject,
-            OnInteractWithObject);
-        InteractionHook.Enable();
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
@@ -113,7 +116,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         ChatGui.ChatMessageHandled -= OnChatMessage;
         Framework.Update -= OnFrameworkUpdate;
-        InteractionHook.Dispose();
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         
@@ -123,6 +125,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         MainWindow.Dispose();
         SprintBlocker.Dispose();
         ObjectiveTracker.Dispose();
+        InteractionRestrictionManager.Dispose();
+        UiRestrictionManager.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
     }
@@ -182,19 +186,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             this.targetedEmotes.Remove(address);
     }
 
-    private unsafe ulong OnInteractWithObject(TargetSystem* targetSystem, GameObject* gameObject, bool checkLineOfSight)
-    {
-        var interactedObject = gameObject == null ? null : ObjectTable.CreateObjectReference((nint)gameObject);
-        if (interactedObject?.ObjectKind == DalamudObjectKind.EventNpc)
-        {
-            var target = interactedObject.Name.ToString();
-            if (!string.IsNullOrWhiteSpace(target))
-                ToastGui.ShowQuest($"Interacting with {target}");
-        }
-
-        return InteractionHook.Original(targetSystem, gameObject, checkLineOfSight);
-    }
-    
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();
 
@@ -203,6 +194,47 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Configuration.EnableRandomizer = enabled;
         SprintBlocker.IsEnabled = enabled;
         ObjectiveTracker.SetEnabled(enabled);
+        InteractionRestrictionManager.SetEnabled(enabled);
+        UiRestrictionManager.SetEnabled(enabled);
         Configuration.Save();
+    }
+
+    public IReadOnlyList<UnlockState> GetUnlockStates()
+    {
+        var states = new List<UnlockState>(Unlocks.Definitions.Count);
+        foreach (var definition in Unlocks.Definitions)
+            states.Add(new UnlockState(definition, Unlocks.Get(Configuration, definition.Key)));
+
+        return states;
+    }
+
+    public void SetUnlockState(UnlockKey key, bool unlocked)
+    {
+        Unlocks.Set(Configuration, key, unlocked);
+        this.ApplyUnlockState(key, unlocked);
+        Configuration.Save();
+    }
+
+    private void ApplyUnlockState(UnlockKey key, bool unlocked)
+    {
+        switch (key)
+        {
+            case UnlockKey.Sprint:
+                SprintBlocker.UnlockSprint = unlocked;
+                SprintBlocker.IsBlocking = !unlocked;
+                break;
+            case UnlockKey.TeleportReturn:
+                SprintBlocker.UnlockTeleportReturn = unlocked;
+                break;
+            case UnlockKey.Mounts:
+                SprintBlocker.UnlockMounts = unlocked;
+                break;
+            case UnlockKey.Gatherers:
+                SprintBlocker.UnlockGatherers = unlocked;
+                break;
+            case UnlockKey.Crafters:
+                SprintBlocker.UnlockCrafters = unlocked;
+                break;
+        }
     }
 }

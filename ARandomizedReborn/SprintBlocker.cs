@@ -17,6 +17,8 @@ public sealed unsafe class SprintBlocker : IDisposable
 {
     private readonly Hook<ActionManager.Delegates.UseAction> useActionHook;
     private readonly uint sprintGeneralActionId;
+    private readonly uint teleportGeneralActionId;
+    private readonly uint returnGeneralActionId;
     private readonly IToastGui toastGui;
     private readonly IFramework framework;
     private readonly IGameGui gameGui;
@@ -34,6 +36,11 @@ public sealed unsafe class SprintBlocker : IDisposable
 
     public bool IsEnabled { get; set; }
     public bool IsBlocking { get; set; }
+    public bool UnlockSprint { get; set; }
+    public bool UnlockTeleportReturn { get; set; }
+    public bool UnlockMounts { get; set; }
+    public bool UnlockGatherers { get; set; }
+    public bool UnlockCrafters { get; set; }
     public int SkillLevelCap { get; set; } = 100;
     public int HighlightRed { get; set; } = 64;
     public int HighlightMultiply { get; set; } = 65;
@@ -55,15 +62,26 @@ public sealed unsafe class SprintBlocker : IDisposable
 
         foreach (var row in dataManager.GetExcelSheet<GeneralAction>())
         {
-            if (row.Name.ToString() != "Sprint")
-                continue;
-
-            sprintGeneralActionId = row.RowId;
-            break;
+            switch (row.Name.ToString())
+            {
+                case "Sprint":
+                    sprintGeneralActionId = row.RowId;
+                    break;
+                case "Teleport":
+                    teleportGeneralActionId = row.RowId;
+                    break;
+                case "Return":
+                    returnGeneralActionId = row.RowId;
+                    break;
+            }
         }
 
         if (sprintGeneralActionId == 0)
             log.Warning("Could not resolve the Sprint GeneralAction row; Sprint blocking will be unavailable.");
+        if (teleportGeneralActionId == 0)
+            log.Warning("Could not resolve the Teleport GeneralAction row; Teleport blocking will be unavailable.");
+        if (returnGeneralActionId == 0)
+            log.Warning("Could not resolve the Return GeneralAction row; Return blocking will be unavailable.");
 
         useActionHook = gameInteropProvider.HookFromAddress<ActionManager.Delegates.UseAction>(
             ActionManager.Addresses.UseAction.Value,
@@ -78,10 +96,10 @@ public sealed unsafe class SprintBlocker : IDisposable
         if (!this.IsEnabled)
             return useActionHook.Original(thisPtr, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
 
-        if (IsBlocking && sprintGeneralActionId != 0 && actionType == ActionType.GeneralAction && actionId == sprintGeneralActionId)
+        if (this.IsLockedAction(actionType, actionId, out var lockName))
         {
             UIGlobals.PlayChatSoundEffect(11);
-            this.toastGui.ShowError("Sprint is diabled!");
+            this.toastGui.ShowError($"Locked: {lockName}");
             return false;
         }
 
@@ -105,7 +123,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     private unsafe void UpdateHighlights(IFramework _)
     {
         this.ClearHighlights();
-        if (!this.IsEnabled || (!IsBlocking && this.SkillLevelCap >= 100) || this.actionLevels.Count == 0)
+        if (!this.IsEnabled || (!this.HasActionBarLocks && this.SkillLevelCap >= 100) || this.actionLevels.Count == 0)
             return;
 
         foreach (var addonName in ActionBarNames)
@@ -147,8 +165,76 @@ public sealed unsafe class SprintBlocker : IDisposable
     }
 
     private bool IsBlockedAction(uint actionId)
-        => (this.IsBlocking && actionId == this.sprintGeneralActionId) ||
+        => (!this.UnlockSprint && actionId == this.sprintGeneralActionId) ||
+           (!this.UnlockTeleportReturn && (actionId == this.teleportGeneralActionId || actionId == this.returnGeneralActionId)) ||
            this.IsSkillLocked(ActionType.Action, actionId, out _);
+
+    private bool HasActionBarLocks
+        => !this.UnlockSprint || !this.UnlockTeleportReturn;
+
+    private bool IsLockedAction(ActionType actionType, uint actionId, out string lockName)
+    {
+        lockName = string.Empty;
+        if (actionType == ActionType.GeneralAction)
+        {
+            if (!this.UnlockSprint && this.sprintGeneralActionId != 0 && actionId == this.sprintGeneralActionId)
+            {
+                lockName = "Sprint";
+                return true;
+            }
+
+            if (!this.UnlockTeleportReturn && this.teleportGeneralActionId != 0 && actionId == this.teleportGeneralActionId)
+            {
+                lockName = "Teleport";
+                return true;
+            }
+
+            if (!this.UnlockTeleportReturn && this.returnGeneralActionId != 0 && actionId == this.returnGeneralActionId)
+            {
+                lockName = "Return";
+                return true;
+            }
+        }
+
+        if (!this.UnlockMounts && actionType == ActionType.Mount)
+        {
+            lockName = "Mounts";
+            return true;
+        }
+
+        if (!this.UnlockCrafters && actionType == ActionType.CraftAction)
+        {
+            lockName = "crafters";
+            return true;
+        }
+
+        if (actionType == ActionType.Action && this.actionLevels.ContainsKey(this.GetAdjustedActionId(actionId)))
+        {
+            var playerState = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+            if (playerState != null)
+            {
+                if (!this.UnlockCrafters && IsCrafterClassJob(playerState->CurrentClassJobId))
+                {
+                    lockName = "crafters";
+                    return true;
+                }
+
+                if (!this.UnlockGatherers && IsGathererClassJob(playerState->CurrentClassJobId))
+                {
+                    lockName = "gatherers";
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsCrafterClassJob(byte classJobId)
+        => classJobId is >= 8 and <= 15;
+
+    private static bool IsGathererClassJob(byte classJobId)
+        => classJobId is >= 16 and <= 18;
 
     private uint GetAdjustedActionId(uint actionId)
     {
