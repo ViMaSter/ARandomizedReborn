@@ -50,33 +50,50 @@ public class MainWindow : Window, IDisposable
         }
 
         var disableControls = !plugin.Configuration.EnableRandomizer;
-        if (disableControls)
-            ImGui.BeginDisabled();
 
-        ImGui.Text("Unlocks");
-        foreach (var unlock in plugin.GetUnlockStates())
+        var reservedBottomHeight = 170 * ImGuiHelpers.GlobalScale;
+        var listAreaHeight = MathF.Max(160 * ImGuiHelpers.GlobalScale, ImGui.GetContentRegionAvail().Y - reservedBottomHeight);
+        var halfHeight = listAreaHeight / 2f;
+
+        if (ImGui.CollapsingHeader("Unlocks", ImGuiTreeNodeFlags.DefaultOpen))
         {
-            var unlocked = unlock.IsUnlocked;
-            if (ImGui.Checkbox(unlock.Definition.DisplayName, ref unlocked))
-                plugin.SetUnlockState(unlock.Definition.Key, unlocked);
+            using var unlocksChild = ImRaii.Child("UnlocksChild", new Vector2(0, halfHeight), true);
+            if (unlocksChild.Success)
+            {
+                if (disableControls)
+                    ImGui.BeginDisabled();
 
-            ImGui.TextWrapped(unlock.Definition.Description);
+                foreach (var unlock in plugin.GetUnlockStates())
+                {
+                    DrawToggleEntry(
+                        $"unlock-{unlock.Definition.Key}",
+                        unlock.Definition.DisplayName,
+                        unlock.Definition.Description,
+                        unlock.IsUnlocked,
+                        value => plugin.SetUnlockState(unlock.Definition.Key, value));
+                }
+
+                if (disableControls)
+                    ImGui.EndDisabled();
+            }
         }
 
-        if (disableControls)
-            ImGui.EndDisabled();
-
         ImGui.Spacing();
-
-        ImGui.Separator();
-        ImGui.Text("Checks");
-        foreach (var status in plugin.BingoSession.GetCheckStatuses())
+        if (ImGui.CollapsingHeader("Checks", ImGuiTreeNodeFlags.DefaultOpen))
         {
-            var complete = status.IsComplete;
-            ImGui.BeginDisabled();
-            ImGui.Checkbox($"{status.Definition.DisplayName}##check-{status.Definition.Id}", ref complete);
-            ImGui.EndDisabled();
-            ImGui.TextWrapped(status.Definition.Description);
+            using var checksChild = ImRaii.Child("ChecksChild", new Vector2(0, halfHeight), true);
+            if (checksChild.Success)
+            {
+                foreach (var status in plugin.BingoSession.GetCheckStatuses())
+                {
+                    DrawToggleEntry(
+                        $"check-{status.Definition.Id}",
+                        status.Definition.DisplayName,
+                        status.Definition.Description,
+                        status.IsComplete,
+                        onToggle: null);
+                }
+            }
         }
 
         if (ImGui.Button("Reset State"))
@@ -140,5 +157,26 @@ public class MainWindow : Window, IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>A single row: checkbox for state, description shown as a tooltip on hover.</summary>
+    private static void DrawToggleEntry(string id, string displayName, string description, bool value, Action<bool>? onToggle)
+    {
+        using var pushId = ImRaii.PushId(id);
+
+        var localValue = value;
+        if (onToggle == null)
+        {
+            ImGui.BeginDisabled();
+            ImGui.Checkbox(displayName, ref localValue);
+            ImGui.EndDisabled();
+        }
+        else if (ImGui.Checkbox(displayName, ref localValue))
+        {
+            onToggle(localValue);
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(description);
     }
 }
