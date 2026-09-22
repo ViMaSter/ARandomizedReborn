@@ -158,6 +158,7 @@ public sealed class BingoSession : IDisposable
 
         this.configuration.CompletedChecks.Clear();
         this.configuration.ManuallyCompletedChecks.Clear();
+        this.configuration.CheckStepProgress.Clear();
         this.configuration.BingoWon = false;
         this.LockEverything();
         this.configuration.Save();
@@ -169,6 +170,7 @@ public sealed class BingoSession : IDisposable
         this.configuration.BingoBoard = [.. cells];
         this.configuration.CompletedChecks.Clear();
         this.configuration.ManuallyCompletedChecks.Clear();
+        this.configuration.CheckStepProgress.Clear();
         this.configuration.BingoWon = false;
         this.LockEverything();
         this.configuration.Save();

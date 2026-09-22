@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using Dalamud.Game;
+using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
@@ -9,16 +11,17 @@ using Lumina.Excel.Sheets;
 
 namespace ARandomizedReborn;
 
-/// <summary>Watches the game for the checks that can be detected automatically.</summary>
+/// <summary>Watches the game for the check steps that can be detected automatically via emotes.</summary>
 public sealed unsafe class ObjectiveTracker : IDisposable
 {
     private const string PointAtBlueAlisaieId = "point-blue-alisaie";
     private const string PetGrahaTiaId = "pet-graha-tia";
+    private const string CheerSameJobId = "cheer-same-job-player";
 
     private readonly IGameInteropProvider gameInteropProvider;
     private readonly ITargetManager targetManager;
-    private readonly IPluginLog log;
-    private readonly Func<string, bool> reportCheck;
+    private readonly IObjectTable objectTable;
+    private readonly CheckProgressTracker progressTracker;
     private readonly Dictionary<ushort, string> emoteNames = [];
     private Hook<AgentEmote.Delegates.ExecuteEmote>? emoteHook;
 
@@ -26,13 +29,13 @@ public sealed unsafe class ObjectiveTracker : IDisposable
         IGameInteropProvider gameInteropProvider,
         IDataManager dataManager,
         ITargetManager targetManager,
-        IPluginLog log,
-        Func<string, bool> reportCheck)
+        IObjectTable objectTable,
+        CheckProgressTracker progressTracker)
     {
         this.gameInteropProvider = gameInteropProvider;
         this.targetManager = targetManager;
-        this.log = log;
-        this.reportCheck = reportCheck;
+        this.objectTable = objectTable;
+        this.progressTracker = progressTracker;
 
         foreach (var row in dataManager.GetExcelSheet<Emote>(ClientLanguage.English))
             this.emoteNames[(ushort)row.RowId] = row.Name.ToString();
@@ -83,6 +86,7 @@ public sealed unsafe class ObjectiveTracker : IDisposable
     {
         this.TryTargetedEmote(emoteId, "Point", IsBlueAlisaie, PointAtBlueAlisaieId);
         this.TryTargetedEmote(emoteId, "Pet", IsGrahaTia, PetGrahaTiaId);
+        this.TryCheerSameJob(emoteId);
         this.emoteHook!.Original(agent, emoteId, playEmoteOption, addToHistory, liveUpdateHistory);
     }
 
@@ -96,8 +100,23 @@ public sealed unsafe class ObjectiveTracker : IDisposable
         if (string.IsNullOrWhiteSpace(targetName) || !targetMatches(targetName))
             return;
 
-        if (this.reportCheck(checkId))
-            this.log.Information("Check completed: {CheckId}", checkId);
+        this.progressTracker.SetFlag(checkId, "done", true);
+    }
+
+    private void TryCheerSameJob(ushort emoteId)
+    {
+        var emoteName = this.emoteNames.TryGetValue(emoteId, out var name) ? name : string.Empty;
+        if (!string.Equals(emoteName, "Cheer", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        if (this.targetManager.Target is not ICharacter { ObjectKind: ObjectKind.Pc } target)
+            return;
+
+        if (this.objectTable.LocalPlayer is not ICharacter localPlayer)
+            return;
+
+        if (target.ClassJob.RowId == localPlayer.ClassJob.RowId)
+            this.progressTracker.SetFlag(CheerSameJobId, "done", true);
     }
 
     private static bool IsBlueAlisaie(string targetName)

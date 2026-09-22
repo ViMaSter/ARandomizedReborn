@@ -85,14 +85,7 @@ public class MainWindow : Window, IDisposable
             if (checksChild.Success)
             {
                 foreach (var status in plugin.BingoSession.GetCheckStatuses())
-                {
-                    DrawToggleEntry(
-                        $"check-{status.Definition.Id}",
-                        status.Definition.DisplayName,
-                        status.Definition.Description,
-                        status.IsComplete,
-                        onToggle: null);
-                }
+                    DrawCheckEntry(plugin, status);
             }
         }
 
@@ -178,5 +171,84 @@ public class MainWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(description);
+    }
+
+    /// <summary>An expandable check row: overall state at a glance, per-step progress when opened.</summary>
+    private static void DrawCheckEntry(Plugin plugin, CheckStatus status)
+    {
+        using var pushId = ImRaii.PushId($"check-{status.Definition.Id}");
+
+        var tracker = plugin.CheckProgressTracker;
+        var complete = status.IsComplete;
+
+        var expanded = ImGui.CollapsingHeader("##expand", ImGuiTreeNodeFlags.None);
+        ImGui.SameLine();
+
+        ImGui.BeginDisabled();
+        ImGui.Checkbox(status.Definition.DisplayName, ref complete);
+        ImGui.EndDisabled();
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(status.Definition.Description);
+
+        if (!expanded)
+            return;
+
+        using var indent = ImRaii.PushIndent();
+        ImGui.TextWrapped(status.Definition.Description);
+
+        foreach (var step in status.Definition.Steps)
+            DrawStepRow(tracker, status.Definition.Id, step, complete);
+    }
+
+    private static void DrawStepRow(CheckProgressTracker tracker, string checkId, CheckStepDefinition step, bool checkComplete)
+    {
+        using var pushId = ImRaii.PushId(step.Id);
+        var locked = checkComplete;
+
+        if (step.Kind == ProgressStepKind.Flag)
+        {
+            var value = tracker.IsStepSatisfied(checkId, step);
+            if (step.Automatic || locked)
+            {
+                ImGui.BeginDisabled();
+                ImGui.Checkbox(step.Label, ref value);
+                ImGui.EndDisabled();
+            }
+            else if (ImGui.Checkbox(step.Label, ref value))
+            {
+                tracker.SetFlag(checkId, step.Id, value);
+            }
+
+            if (step.Automatic)
+            {
+                ImGui.SameLine();
+                ImGui.TextDisabled("(auto)");
+            }
+
+            return;
+        }
+
+        var current = tracker.GetValue(checkId, step.Id);
+        var target = tracker.GetTarget(checkId, step);
+        ImGui.Text($"{step.Label}: {Math.Min(current, target)}/{target}");
+
+        if (step.Automatic)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled("(auto)");
+        }
+        else if (!locked)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("-"))
+                tracker.AdjustCounter(checkId, step.Id, -1);
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("+"))
+                tracker.AdjustCounter(checkId, step.Id, 1);
+        }
+
+        ImGui.ProgressBar(target <= 0 ? 0f : Math.Clamp(current / (float)target, 0f, 1f), new Vector2(-1, 0));
     }
 }

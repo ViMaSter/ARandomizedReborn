@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -48,6 +49,19 @@ public class BingoWindow : Window, IDisposable
         ImGui.TextDisabled("(?)");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Turn this off to play normally. Your board and progress are kept and resume when you turn it back on.");
+
+        ImGui.SameLine(0, 20 * ImGuiHelpers.GlobalScale);
+        var hintMode = this.plugin.Configuration.BingoHintModeEnabled;
+        if (ImGui.Checkbox("Hint mode", ref hintMode))
+        {
+            this.plugin.Configuration.BingoHintModeEnabled = hintMode;
+            this.plugin.Configuration.Save();
+        }
+
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("When on, squares are colored by whether their unlock is already granted. When off (default), you have to guess.");
 
         ImGui.SameLine(0, 20 * ImGuiHelpers.GlobalScale);
         if (ImGui.Button("New session..."))
@@ -110,49 +124,86 @@ public class BingoWindow : Window, IDisposable
     {
         var session = this.plugin.BingoSession;
         var winningLine = session.HasWon ? session.WinningLine : null;
+        var hintMode = this.plugin.Configuration.BingoHintModeEnabled;
 
-        var available = ImGui.GetContentRegionAvail().X;
         var spacing = ImGui.GetStyle().ItemSpacing.X;
-        var cellWidth = (available - (spacing * (BingoBoard.Size - 1))) / BingoBoard.Size;
-        var cellSize = new Vector2(cellWidth, 86 * ImGuiHelpers.GlobalScale);
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var reservedBottomHeight = ImGui.GetTextLineHeightWithSpacing() + (8 * ImGuiHelpers.GlobalScale);
+        var availableHeight = ImGui.GetContentRegionAvail().Y - reservedBottomHeight;
+
+        var maxCellWidth = (availableWidth - (spacing * (BingoBoard.Size - 1))) / BingoBoard.Size;
+        var maxCellHeight = (availableHeight - (spacing * (BingoBoard.Size - 1))) / BingoBoard.Size;
+        var cellSide = MathF.Max(40 * ImGuiHelpers.GlobalScale, MathF.Min(maxCellWidth, maxCellHeight));
+        var cellSize = new Vector2(cellSide, cellSide);
+        var padding = new Vector2(8, 6) * ImGuiHelpers.GlobalScale;
+
+        var gridWidth = (cellSide * BingoBoard.Size) + (spacing * (BingoBoard.Size - 1));
+        var startX = ImGui.GetCursorPosX() + MathF.Max(0, (availableWidth - gridWidth) / 2f);
 
         for (var index = 0; index < BingoBoard.CellCount; index++)
         {
             if (index % BingoBoard.Size != 0)
                 ImGui.SameLine();
+            else
+                ImGui.SetCursorPosX(startX);
 
             var cell = session.Cells[index];
             var definition = cell.Definition;
             var attemptable = session.IsCellAttemptable(cell);
             var isWinning = winningLine?.Contains(index) == true;
+            var showLocked = hintMode && !attemptable;
 
             var background = cell.IsComplete
                 ? (isWinning ? WinningColor : CompleteColor)
-                : attemptable ? ImGui.GetStyle().Colors[(int)ImGuiCol.Button] : LockedColor;
+                : showLocked ? LockedColor : ImGui.GetStyle().Colors[(int)ImGuiCol.Button];
             var hover = cell.IsComplete
                 ? CompleteHoverColor
-                : attemptable ? ImGui.GetStyle().Colors[(int)ImGuiCol.ButtonHovered] : LockedHoverColor;
+                : showLocked ? LockedHoverColor : ImGui.GetStyle().Colors[(int)ImGuiCol.ButtonHovered];
 
+            var buttonMin = ImGui.GetCursorScreenPos();
+            bool clicked;
             using (ImRaii.PushColor(ImGuiCol.Button, background)
                        .Push(ImGuiCol.ButtonHovered, hover)
                        .Push(ImGuiCol.ButtonActive, hover))
             {
-                var label = $"{Truncate(definition?.DisplayName ?? cell.CheckId, 44)}##bingo-cell-{index}";
-                if (ImGui.Button(label, cellSize) && !cell.IsComplete)
-                {
-                    this.pendingOverrideIndex = index;
-                    this.openOverridePopup = true;
-                }
+                clicked = ImGui.Button($"##bingo-cell-{index}", cellSize);
             }
 
-            if (!ImGui.IsItemHovered())
+            var hovered = ImGui.IsItemHovered();
+
+            // Draw each wrapped line straight onto the draw list, centered, so it can't disturb the grid's SameLine layout.
+            var label = definition?.DisplayName ?? cell.CheckId;
+            var drawList = ImGui.GetWindowDrawList();
+            var wrapWidth = cellSize.X - (padding.X * 2);
+            var lines = WrapLabel(label, wrapWidth);
+            var lineHeight = ImGui.GetTextLineHeight();
+            var blockTop = buttonMin.Y + ((cellSize.Y - (lines.Count * lineHeight)) / 2f);
+            var font = ImGui.GetFont();
+            var fontSize = ImGui.GetFontSize();
+            var textColor = ImGui.GetColorU32(ImGuiCol.Text);
+
+            for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+            {
+                var line = lines[lineIndex];
+                var lineWidth = ImGui.CalcTextSize(line).X;
+                var linePos = new Vector2(buttonMin.X + ((cellSize.X - lineWidth) / 2f), blockTop + (lineIndex * lineHeight));
+                drawList.AddText(font, fontSize, linePos, textColor, line);
+            }
+
+            if (clicked && !cell.IsComplete)
+            {
+                this.pendingOverrideIndex = index;
+                this.openOverridePopup = true;
+            }
+
+            if (!hovered)
                 continue;
 
             var rewardName = Unlocks.Definitions.First(unlock => unlock.Key == cell.Reward).DisplayName;
             var requirement = cell.RequiredUnlock == null
                 ? "No unlock required"
                 : $"Requires: {Unlocks.Definitions.First(unlock => unlock.Key == cell.RequiredUnlock.Value).DisplayName}" +
-                  (attemptable ? " (granted)" : " (still locked)");
+                  (hintMode ? attemptable ? " (granted)" : " (still locked)" : string.Empty);
 
             using var tooltip = ImRaii.Tooltip();
             ImGui.TextUnformatted(definition?.DisplayName ?? cell.CheckId);
@@ -162,7 +213,7 @@ public class BingoWindow : Window, IDisposable
             ImGui.TextUnformatted($"Grants: {rewardName}");
             if (cell.IsComplete)
                 ImGui.TextUnformatted(cell.ManualOverride ? "Completed (manual override)" : "Completed (auto-detected)");
-            if (definition is { HasAutomaticDetection: false })
+            if (definition is { IsFullyAutomatic: false })
                 ImGui.TextDisabled("No automatic detection - mark this one yourself.");
         }
     }
@@ -255,6 +306,29 @@ public class BingoWindow : Window, IDisposable
             _ => difficulty.ToString(),
         };
 
-    private static string Truncate(string value, int maxLength)
-        => value.Length <= maxLength ? value : string.Concat(value.AsSpan(0, maxLength - 1), "…");
+    /// <summary>Greedily word-wraps text to a pixel width using the current font's measurements.</summary>
+    private static List<string> WrapLabel(string text, float wrapWidth)
+    {
+        var lines = new List<string>();
+        var current = string.Empty;
+
+        foreach (var word in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = current.Length == 0 ? word : $"{current} {word}";
+            if (current.Length > 0 && ImGui.CalcTextSize(candidate).X > wrapWidth)
+            {
+                lines.Add(current);
+                current = word;
+            }
+            else
+            {
+                current = candidate;
+            }
+        }
+
+        if (current.Length > 0)
+            lines.Add(current);
+
+        return lines.Count > 0 ? lines : [text];
+    }
 }

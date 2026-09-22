@@ -32,7 +32,9 @@ public class Configuration : IPluginConfiguration
     public List<BingoCell> BingoBoard { get; set; } = [];
     public HashSet<string> CompletedChecks { get; set; } = [];
     public HashSet<string> ManuallyCompletedChecks { get; set; } = [];
+    public Dictionary<string, Dictionary<string, int>> CheckStepProgress { get; set; } = [];
     public bool BingoWon { get; set; } = false;
+    public bool BingoHintModeEnabled { get; set; } = false;
     public int SkillLevelCap { get; set; } = 100;
     public int SprintHighlightRed { get; set; } = 90;
     public int SprintHighlightMultiply { get; set; } = 30;

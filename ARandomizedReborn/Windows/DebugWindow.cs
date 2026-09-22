@@ -92,7 +92,7 @@ public class DebugWindow : Window, IDisposable
 
             ImGui.TableNextColumn();
             if (!status.IsComplete)
-                ImGui.TextDisabled(status.Definition.HasAutomaticDetection ? "not hit" : "not hit (manual only)");
+                ImGui.TextDisabled(status.Definition.IsFullyAutomatic ? "not hit" : "not hit (manual only)");
             else if (status.WasManualOverride)
                 ImGui.TextColored(ManualColor, "overridden");
             else

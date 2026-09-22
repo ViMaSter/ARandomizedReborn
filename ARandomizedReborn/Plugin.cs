@@ -34,6 +34,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] internal static IAgentLifecycle AgentLifecycle { get; private set; } = null!;
+    [PluginService] internal static Dalamud.Plugin.Services.IGameInventory GameInventory { get; private set; } = null!;
 
     private const string CommandName = "/randomizer";
 
@@ -42,6 +43,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("ARandomizedReborn");
     public SprintBlocker SprintBlocker { get; init; }
     public ObjectiveTracker ObjectiveTracker { get; init; }
+    public CheckProgressTracker CheckProgressTracker { get; init; }
     public BingoSession BingoSession { get; init; }
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
@@ -74,10 +76,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
             HighlightMultiply = Configuration.SprintHighlightMultiply,
         };
 
-        ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, Log, ReportCheck);
-        ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
-
         BingoSession = new BingoSession(Configuration, ApplyUnlockState, Notify);
+
+        CheckProgressTracker = new CheckProgressTracker(
+            Configuration, ReportCheck, Framework, ClientState, TargetManager, ObjectTable, GameInventory, DataManager, SprintBlocker, Log);
+        CheckProgressTracker.SetEnabled(Configuration.EnableRandomizer);
+
+        ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
+        ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
 
         InteractionRestrictionManager = new InteractionRestrictionManager(GameInteropProvider, ToastGui, Configuration);
         InteractionRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
@@ -133,6 +139,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         DebugWindow.Dispose();
         SprintBlocker.Dispose();
         ObjectiveTracker.Dispose();
+        CheckProgressTracker.Dispose();
         BingoSession.Dispose();
         InteractionRestrictionManager.Dispose();
         UiRestrictionManager.Dispose();
@@ -206,7 +213,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ResetProgress() => BingoSession.ResetProgressOnly();
 
-    public void CompleteCheckManually(string checkId) => BingoSession.TryCompleteCheck(checkId, manualOverride: true);
+    public void CompleteCheckManually(string checkId)
+    {
+        if (BingoSession.TryCompleteCheck(checkId, manualOverride: true))
+            CheckProgressTracker.MarkAllStepsComplete(checkId);
+    }
 
     /// <summary>Only counts automatic detections while the randomizer is actually running.</summary>
     private bool ReportCheck(string checkId)
@@ -223,6 +234,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Configuration.EnableRandomizer = enabled;
         SprintBlocker.IsEnabled = enabled;
         ObjectiveTracker.SetEnabled(enabled);
+        CheckProgressTracker.SetEnabled(enabled);
         InteractionRestrictionManager.SetEnabled(enabled);
         UiRestrictionManager.SetEnabled(enabled);
         AgentRestrictionManager.SetEnabled(enabled);

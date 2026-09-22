@@ -47,6 +47,12 @@ public sealed unsafe class SprintBlocker : IDisposable
     public int HighlightRed { get; set; } = 64;
     public int HighlightMultiply { get; set; } = 65;
 
+    public uint TeleportGeneralActionId => this.teleportGeneralActionId;
+    public uint ReturnGeneralActionId => this.returnGeneralActionId;
+
+    /// <summary>Raised whenever an action actually goes through (i.e. was not blocked).</summary>
+    public event Action<ActionType, uint>? ActionUsed;
+
     public SprintBlocker(
         IGameInteropProvider gameInteropProvider,
         IDataManager dataManager,
@@ -123,6 +129,7 @@ public sealed unsafe class SprintBlocker : IDisposable
             return false;
         }
 
+        this.ActionUsed?.Invoke(actionType, actionId);
         return useActionHook.Original(thisPtr, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
     }
 
