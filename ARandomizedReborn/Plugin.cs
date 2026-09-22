@@ -29,6 +29,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
     [PluginService] internal static ITargetManager TargetManager { get; private set; } = null!;
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
+    [PluginService] internal static IFateTable FateTable { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
@@ -85,7 +86,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         CheckProgressTracker = new CheckProgressTracker(
             Configuration, ReportCheck, Framework, ClientState, Condition, DutyState, PlayerState, TargetManager, ObjectTable, GameInventory,
-            DataManager, SprintBlocker, InteractionRestrictionManager, ChatGui, AddonLifecycle, Log);
+            FateTable, DataManager, SprintBlocker, InteractionRestrictionManager, ChatGui, AddonLifecycle, AgentLifecycle, Log);
         CheckProgressTracker.SetEnabled(Configuration.EnableRandomizer);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);

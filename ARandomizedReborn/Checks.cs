@@ -74,7 +74,7 @@ public static class Checks
             Manual("Escape combat with 5 enemies without Sprint")),
         new("fate-with-player-nearby", "Team FATE",
             "Complete a FATE with at least one other player nearby.", null,
-            Manual("Complete a FATE with another player nearby")),
+            Auto("Complete a FATE with another player nearby")),
         new("three-starting-aetherytes", "Tour the aetherytes",
             "Interact with all three starting city-state aetherytes without teleporting.", null,
             Steps(
@@ -117,10 +117,10 @@ public static class Checks
         // Inn rooms.
         new("inn-unending-journey-cutscene", "The Unending Journey",
             "Watch any cutscene from The Unending Journey.", UnlockKey.InnRooms,
-            Manual("Watch a cutscene from The Unending Journey")),
+            Auto("Watch a cutscene from The Unending Journey")),
         new("inn-change-hairstyle", "Change your hairstyle",
             "Use the aesthetician to change your hairstyle.", UnlockKey.InnRooms,
-            Manual("Change your hairstyle")),
+            Auto("Change your hairstyle")),
         new("inn-toy-chest-highscore", "Toy chest highscore",
             "Get a highscore in any toy chest minigame.", UnlockKey.InnRooms,
             Manual("Get a toy chest highscore")),
@@ -134,7 +134,7 @@ public static class Checks
             Auto("Win a Triple Triad match")),
         new("goldsaucer-gate-fail-fast", "Fail a GATE fast",
             "Fail a GATE within the first 30 seconds.", UnlockKey.GoldSaucer,
-            Manual("Fail a GATE within 30 seconds")),
+            Auto("Fail a GATE within 30 seconds")),
 
         // Gatherers.
         new("gather-time-restricted-fish", "Catch a timed fish",
@@ -170,7 +170,7 @@ public static class Checks
         // Dungeons.
         new("dungeon-greed-win", "Greed and win",
             "Roll 'Greed' on a dungeon item and win it.", UnlockKey.Dungeons,
-            Manual("Greed roll and win a dungeon item")),
+            Auto("Greed roll and win a dungeon item")),
         new("dungeon-no-deaths", "Flawless run",
             "Finish a dungeon with no deaths.", UnlockKey.Dungeons,
             Auto("Finish a dungeon with no deaths")),

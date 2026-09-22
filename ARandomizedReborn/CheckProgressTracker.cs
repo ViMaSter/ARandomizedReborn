@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
+using Dalamud.Game.Agent;
+using Dalamud.Game.Agent.AgentArgTypes;
 using Dalamud.Game;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Chat;
 using Dalamud.Game.ClientState.Conditions;
+using Dalamud.Game.ClientState.Fates;
 using Dalamud.Game.DutyState;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.SubKinds;
@@ -14,8 +18,12 @@ using Dalamud.Game.Inventory;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Game.GoldSaucer;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using Lumina.Excel.Sheets;
+using DalamudAgentId = Dalamud.Game.Agent.AgentId;
 using ClientTerritoryIntendedUse = FFXIVClientStructs.FFXIV.Client.Enums.TerritoryIntendedUse;
 
 namespace ARandomizedReborn;
@@ -35,6 +43,30 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private const uint BotanistClassJobId = 17;
     private const uint CulinarianClassJobId = 15;
     private const int InventorySettleFrames = 15;
+    private const int PendingLootFrames = 300;
+    private const int HairstyleSettleFrames = 1800;
+
+    private sealed class FateAttempt
+    {
+        public required FateState State { get; set; }
+        public bool HadNearbyPlayer { get; set; }
+        public DateTime LastSeenUtc { get; set; } = DateTime.UtcNow;
+    }
+
+    private sealed class PendingGreedRoll
+    {
+        public required uint ItemId { get; init; }
+        public required int QuantityBefore { get; init; }
+        public int FramesRemaining { get; set; } = PendingLootFrames;
+    }
+
+    private sealed class GateAttempt
+    {
+        public required nint DirectorAddress { get; init; }
+        public required DateTime StartedUtc { get; init; }
+        public bool Finished { get; set; }
+        public DateTime LastSeenUtc { get; set; } = DateTime.UtcNow;
+    }
 
     private sealed class PendingInventoryAction
     {
@@ -85,11 +117,13 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly ITargetManager targetManager;
     private readonly IObjectTable objectTable;
     private readonly IGameInventory gameInventory;
+    private readonly IFateTable fateTable;
     private readonly IDataManager dataManager;
     private readonly SprintBlocker sprintBlocker;
     private readonly InteractionRestrictionManager interactionRestrictionManager;
     private readonly IChatGui chatGui;
     private readonly IAddonLifecycle addonLifecycle;
+    private readonly IAgentLifecycle agentLifecycle;
     private readonly IPluginLog log;
 
     private readonly HashSet<uint> uldahTerritoryIds = [];
@@ -115,6 +149,16 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private int fallDamageFramesRemaining;
     private readonly List<PendingInventoryAction> pendingGatheringActions = [];
     private readonly List<PendingInventoryAction> pendingCraftingActions = [];
+    private readonly Dictionary<ushort, FateAttempt> fateAttempts = [];
+    private readonly Dictionary<(uint ChestObjectId, uint ChestItemIndex), RollResult> lootRollStates = [];
+    private readonly List<PendingGreedRoll> pendingGreedRolls = [];
+    private byte? lastInnHairstyle;
+    private byte? hairstyleBeforeAesthetician;
+    private int hairstyleSettleFrames;
+    private bool cutsceneReplayArmed;
+    private bool cutsceneReplayStarted;
+    private DateTime cutsceneReplayArmedUtc;
+    private GateAttempt? gateAttempt;
     private int tickCounter;
 
     public CheckProgressTracker(
@@ -128,11 +172,13 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         ITargetManager targetManager,
         IObjectTable objectTable,
         IGameInventory gameInventory,
+        IFateTable fateTable,
         IDataManager dataManager,
         SprintBlocker sprintBlocker,
         InteractionRestrictionManager interactionRestrictionManager,
         IChatGui chatGui,
         IAddonLifecycle addonLifecycle,
+        IAgentLifecycle agentLifecycle,
         IPluginLog log)
     {
         this.configuration = configuration;
@@ -145,11 +191,13 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.targetManager = targetManager;
         this.objectTable = objectTable;
         this.gameInventory = gameInventory;
+        this.fateTable = fateTable;
         this.dataManager = dataManager;
         this.sprintBlocker = sprintBlocker;
         this.interactionRestrictionManager = interactionRestrictionManager;
         this.chatGui = chatGui;
         this.addonLifecycle = addonLifecycle;
+        this.agentLifecycle = agentLifecycle;
         this.log = log;
 
         this.ResolveTerritories();
@@ -177,6 +225,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskAsk", this.OnVentureStartedAddon);
             this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskResult", this.OnVentureCompletedAddon);
             this.addonLifecycle.RegisterListener(AddonEvent.PreFinalize, "TripleTriad", this.OnTripleTriadClosing);
+            this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "CharaMake", this.OnAestheticianOpened);
+            this.addonLifecycle.RegisterListener(AddonEvent.PreFinalize, "CharaMake", this.OnAestheticianClosing);
+            this.agentLifecycle.RegisterListener(AgentEvent.PostShow, DalamudAgentId.FateReward, this.OnFateRewardShown);
+            this.agentLifecycle.RegisterListener(AgentEvent.PostShow, DalamudAgentId.CutsceneReplay, this.OnCutsceneReplayShown);
             this.framework.Update += this.OnFrameworkUpdate;
         }
         else
@@ -192,6 +244,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskAsk", this.OnVentureStartedAddon);
             this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskResult", this.OnVentureCompletedAddon);
             this.addonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "TripleTriad", this.OnTripleTriadClosing);
+            this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "CharaMake", this.OnAestheticianOpened);
+            this.addonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "CharaMake", this.OnAestheticianClosing);
+            this.agentLifecycle.UnregisterListener(AgentEvent.PostShow, DalamudAgentId.FateReward, this.OnFateRewardShown);
+            this.agentLifecycle.UnregisterListener(AgentEvent.PostShow, DalamudAgentId.CutsceneReplay, this.OnCutsceneReplayShown);
             this.framework.Update -= this.OnFrameworkUpdate;
             this.dungeonRunArmed = false;
             this.dungeonRunHadDeath = false;
@@ -203,6 +259,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.fallDamageFramesRemaining = 0;
             this.pendingGatheringActions.Clear();
             this.pendingCraftingActions.Clear();
+            this.ResetTransientContentTracking();
         }
     }
 
@@ -448,6 +505,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
     private void OnTerritoryChanged(uint territoryId)
     {
+        this.ResetTransientContentTracking();
+
         const string checkId = "pray-return-waking-sands";
         if (!this.IsLockedIn(checkId))
         {
@@ -493,6 +552,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     {
         if (this.dungeonRunArmed)
             this.dungeonRunHadDeath = true;
+
+        this.ClearLootTracking();
     }
 
     private void OnDutyCompleted(IDutyStateEventArgs _)
@@ -502,6 +563,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         this.dungeonRunArmed = false;
         this.dungeonRunHadDeath = false;
+        this.ClearLootTracking();
     }
 
     private void OnConditionChanged(ConditionFlag flag, bool value)
@@ -542,6 +604,20 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             {
                 this.pendingCraftingActions.Add(this.craftingAction);
                 this.craftingAction = null;
+            }
+        }
+        else if (flag is ConditionFlag.WatchingCutscene or ConditionFlag.WatchingCutscene78)
+        {
+            if (value && this.cutsceneReplayArmed)
+            {
+                this.cutsceneReplayStarted = true;
+            }
+            else if (!value && this.cutsceneReplayStarted &&
+                     !this.condition[ConditionFlag.WatchingCutscene] &&
+                     !this.condition[ConditionFlag.WatchingCutscene78])
+            {
+                this.ClearCutsceneReplayTracking();
+                this.SetFlag("inn-unending-journey-cutscene", "done", true);
             }
         }
     }
@@ -614,6 +690,93 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private void OnVentureCompletedAddon(AddonEvent type, AddonArgs args)
         => this.SetFlag("retainer-venture-complete", "completed", true);
 
+    private void OnAestheticianOpened(AddonEvent type, AddonArgs args)
+    {
+        if (this.IsLockedIn("inn-change-hairstyle") || !this.IsInInn())
+            return;
+
+        this.hairstyleBeforeAesthetician = this.objectTable.LocalPlayer is ICharacter localPlayer
+            ? localPlayer.Customize[(int)CustomizeIndex.HairStyle]
+            : this.lastInnHairstyle;
+        this.hairstyleSettleFrames = 0;
+    }
+
+    private void OnAestheticianClosing(AddonEvent type, AddonArgs args)
+    {
+        if (this.hairstyleBeforeAesthetician.HasValue)
+            this.hairstyleSettleFrames = HairstyleSettleFrames;
+    }
+
+    private void OnCutsceneReplayShown(AgentEvent type, AgentArgs args)
+    {
+        if (this.IsLockedIn("inn-unending-journey-cutscene") || !this.IsInInn())
+            return;
+
+        this.cutsceneReplayArmed = true;
+        this.cutsceneReplayStarted = false;
+        this.cutsceneReplayArmedUtc = DateTime.UtcNow;
+    }
+
+    private void OnFateRewardShown(AgentEvent type, AgentArgs args)
+    {
+        if (args.Agent.IsNull)
+            return;
+
+        var agent = args.GetAgentPointer<AgentFateReward>();
+        for (var index = agent->Rewards.Count - 1; index >= 0; index--)
+        {
+            ref var reward = ref agent->Rewards[index];
+            if (reward.Type == AgentFateReward.RewardType.FateReward)
+            {
+                this.TryCompleteTeamFate(reward);
+                return;
+            }
+
+            if (reward.Type == AgentFateReward.RewardType.GoldSaucerReward)
+            {
+                this.TryCompleteFastGate(reward);
+                return;
+            }
+        }
+    }
+
+    private void TryCompleteTeamFate(AgentFateReward.Reward reward)
+    {
+        const string checkId = "fate-with-player-nearby";
+        if (this.IsLockedIn(checkId) || !reward.IsSuccess)
+            return;
+
+        if (reward.Id <= ushort.MaxValue && this.fateAttempts.TryGetValue((ushort)reward.Id, out var attempt) && attempt.HadNearbyPlayer)
+        {
+            this.SetFlag(checkId, "done", true);
+            return;
+        }
+
+        var recentNearbyAttempt = this.fateAttempts.Values.Any(candidate =>
+            candidate.HadNearbyPlayer &&
+            candidate.State is FateState.Ending or FateState.Ended &&
+            DateTime.UtcNow - candidate.LastSeenUtc <= TimeSpan.FromSeconds(10));
+        if (recentNearbyAttempt)
+            this.SetFlag(checkId, "done", true);
+    }
+
+    private void TryCompleteFastGate(AgentFateReward.Reward reward)
+    {
+        const string checkId = "goldsaucer-gate-fail-fast";
+        if (this.IsLockedIn(checkId) || reward.IsSuccess)
+            return;
+
+        this.CheckGateAttempt();
+        if (this.gateAttempt is not { Finished: true } attempt)
+            return;
+
+        var elapsed = DateTime.UtcNow - attempt.StartedUtc;
+        if (elapsed >= TimeSpan.Zero && elapsed <= TimeSpan.FromSeconds(30))
+            this.SetFlag(checkId, "done", true);
+
+        this.gateAttempt = null;
+    }
+
     /// <summary>The match addon has no explicit win/lose flag; tally board card ownership as it closes instead.</summary>
     private unsafe void OnTripleTriadClosing(AddonEvent type, AddonArgs args)
     {
@@ -662,6 +825,9 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.ProcessPendingCheeseUse();
         this.ProcessPendingCactpotUse();
         this.ProcessPendingFallDamage();
+        this.CaptureInnHairstyle();
+        this.ProcessPendingHairstyleChange();
+        this.ExpireCutsceneReplayTracking();
 
         this.tickCounter++;
         if (this.tickCounter % 30 != 0)
@@ -674,7 +840,214 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckFullArmoryCategory();
         this.CheckEmptyInventory();
         this.CheckRetainerMarketSlots();
+        this.CheckFateAttempts();
+        this.CheckLootRolls();
+        this.ProcessPendingGreedRolls();
+        this.CheckGateAttempt();
     }
+
+    private void CheckFateAttempts()
+    {
+        if (this.IsLockedIn("fate-with-player-nearby") || this.objectTable.LocalPlayer is not IPlayerCharacter localPlayer)
+            return;
+
+        var now = DateTime.UtcNow;
+        foreach (var fate in this.fateTable)
+        {
+            if (fate.State is not (FateState.Running or FateState.Ending or FateState.Ended))
+                continue;
+
+            if (Vector3.Distance(localPlayer.Position, fate.Position) > fate.Radius)
+                continue;
+
+            var hasNearbyPlayer = this.objectTable.Any(gameObject =>
+                gameObject.ObjectKind == ObjectKind.Pc &&
+                gameObject.EntityId != localPlayer.EntityId &&
+                Vector3.Distance(gameObject.Position, fate.Position) <= fate.Radius);
+
+            if (!this.fateAttempts.TryGetValue(fate.FateId, out var attempt))
+            {
+                attempt = new FateAttempt { State = fate.State };
+                this.fateAttempts[fate.FateId] = attempt;
+            }
+
+            attempt.State = fate.State;
+            attempt.HadNearbyPlayer |= hasNearbyPlayer;
+            attempt.LastSeenUtc = now;
+        }
+
+        foreach (var fateId in this.fateAttempts
+                     .Where(pair => now - pair.Value.LastSeenUtc > TimeSpan.FromSeconds(15))
+                     .Select(pair => pair.Key)
+                     .ToArray())
+        {
+            this.fateAttempts.Remove(fateId);
+        }
+    }
+
+    private void CheckLootRolls()
+    {
+        if (!this.dungeonRunArmed || this.IsLockedIn("dungeon-greed-win"))
+            return;
+
+        var loot = Loot.Instance();
+        if (loot == null)
+            return;
+
+        var activeKeys = new HashSet<(uint ChestObjectId, uint ChestItemIndex)>();
+        foreach (ref var item in loot->Items)
+        {
+            if (item.ItemId == 0)
+                continue;
+
+            var key = (item.ChestObjectId, item.ChestItemIndex);
+            activeKeys.Add(key);
+            var previous = this.lootRollStates.GetValueOrDefault(key, RollResult.Unknown);
+            if (item.RollResult == RollResult.Greeded && previous != RollResult.Greeded)
+            {
+                var inventory = this.SnapshotPlayerInventory();
+                this.pendingGreedRolls.Add(new PendingGreedRoll
+                {
+                    ItemId = item.ItemId,
+                    QuantityBefore = inventory.GetValueOrDefault(item.ItemId),
+                });
+            }
+
+            this.lootRollStates[key] = item.RollResult;
+        }
+
+        foreach (var key in this.lootRollStates.Keys.Where(key => !activeKeys.Contains(key)).ToArray())
+            this.lootRollStates.Remove(key);
+    }
+
+    private void ProcessPendingGreedRolls()
+    {
+        if (this.pendingGreedRolls.Count == 0)
+            return;
+
+        var inventory = this.SnapshotPlayerInventory();
+        for (var index = this.pendingGreedRolls.Count - 1; index >= 0; index--)
+        {
+            var roll = this.pendingGreedRolls[index];
+            if (inventory.GetValueOrDefault(roll.ItemId) > roll.QuantityBefore)
+            {
+                this.pendingGreedRolls.Clear();
+                this.SetFlag("dungeon-greed-win", "done", true);
+                return;
+            }
+
+            if (--roll.FramesRemaining <= 0)
+                this.pendingGreedRolls.RemoveAt(index);
+        }
+    }
+
+    private void CheckGateAttempt()
+    {
+        if (this.IsLockedIn("goldsaucer-gate-fail-fast"))
+            return;
+
+        var manager = GoldSaucerManager.Instance();
+        var director = manager == null ? null : manager->CurrentGFateDirector;
+        if (director == null)
+        {
+            if (this.gateAttempt != null && DateTime.UtcNow - this.gateAttempt.LastSeenUtc > TimeSpan.FromSeconds(10))
+                this.gateAttempt = null;
+            return;
+        }
+
+        var flags = director->Flags;
+        if (!flags.HasFlag(GFateDirectorFlag.IsJoined))
+            return;
+
+        var address = (nint)director;
+        if (this.gateAttempt == null || this.gateAttempt.DirectorAddress != address)
+        {
+            var startTimestamp = director->GoldSaucerDirector.Director.DirectorStartTimestamp;
+            var startedUtc = startTimestamp > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(startTimestamp).UtcDateTime
+                : DateTime.UtcNow;
+            this.gateAttempt = new GateAttempt
+            {
+                DirectorAddress = address,
+                StartedUtc = startedUtc,
+            };
+        }
+
+        this.gateAttempt.Finished |= flags.HasFlag(GFateDirectorFlag.IsFinished);
+        this.gateAttempt.LastSeenUtc = DateTime.UtcNow;
+    }
+
+    private void ProcessPendingHairstyleChange()
+    {
+        if (!this.hairstyleBeforeAesthetician.HasValue || this.hairstyleSettleFrames <= 0)
+            return;
+
+        if (!this.IsInInn())
+        {
+            this.ClearHairstyleTracking();
+            return;
+        }
+
+        if (this.objectTable.LocalPlayer is ICharacter localPlayer &&
+            localPlayer.Customize[(int)CustomizeIndex.HairStyle] != this.hairstyleBeforeAesthetician.Value)
+        {
+            this.ClearHairstyleTracking();
+            this.SetFlag("inn-change-hairstyle", "done", true);
+            return;
+        }
+
+        if (--this.hairstyleSettleFrames <= 0)
+            this.ClearHairstyleTracking();
+    }
+
+    private void CaptureInnHairstyle()
+    {
+        if (this.hairstyleBeforeAesthetician.HasValue || !this.IsInInn() || this.objectTable.LocalPlayer is not ICharacter localPlayer)
+            return;
+
+        this.lastInnHairstyle = localPlayer.Customize[(int)CustomizeIndex.HairStyle];
+    }
+
+    private void ExpireCutsceneReplayTracking()
+    {
+        if (!this.cutsceneReplayArmed)
+            return;
+
+        if (!this.IsInInn() || DateTime.UtcNow - this.cutsceneReplayArmedUtc > TimeSpan.FromMinutes(10))
+            this.ClearCutsceneReplayTracking();
+    }
+
+    private void ResetTransientContentTracking()
+    {
+        this.fateAttempts.Clear();
+        this.ClearLootTracking();
+        this.ClearHairstyleTracking();
+        this.ClearCutsceneReplayTracking();
+        this.gateAttempt = null;
+        this.lastInnHairstyle = null;
+    }
+
+    private void ClearLootTracking()
+    {
+        this.lootRollStates.Clear();
+        this.pendingGreedRolls.Clear();
+    }
+
+    private void ClearHairstyleTracking()
+    {
+        this.hairstyleBeforeAesthetician = null;
+        this.hairstyleSettleFrames = 0;
+    }
+
+    private void ClearCutsceneReplayTracking()
+    {
+        this.cutsceneReplayArmed = false;
+        this.cutsceneReplayStarted = false;
+        this.cutsceneReplayArmedUtc = default;
+    }
+
+    private bool IsInInn()
+        => GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Inn;
 
     private void ProcessPendingCheeseUse()
     {
