@@ -4,7 +4,10 @@ using Dalamud.Game;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
 
@@ -17,10 +20,14 @@ namespace ARandomizedReborn;
 public sealed unsafe class SprintBlocker : IDisposable
 {
     private readonly Hook<ActionManager.Delegates.UseAction> useActionHook;
+    private readonly Hook<ActionManager.Delegates.UseActionLocation> useActionLocationHook;
+    private readonly Hook<Telepo.SelectUseTicketInvoker.Delegates.TeleportWithTickets> teleportWithTicketsHook;
+    private readonly Hook<AgentInventoryContext.Delegates.UseItem> useItemHook;
     private readonly uint sprintGeneralActionId;
     private readonly uint teleportGeneralActionId;
     private readonly uint returnGeneralActionId;
     private readonly uint gysahlGreensItemId;
+    private readonly HashSet<uint> teleportItemIds = [];
     private readonly IToastGui toastGui;
     private readonly IFramework framework;
     private readonly IGameGui gameGui;
@@ -94,6 +101,12 @@ public sealed unsafe class SprintBlocker : IDisposable
             break;
         }
 
+        foreach (var row in dataManager.GetExcelSheet<Item>(ClientLanguage.English))
+        {
+            if (row.Name.ToString().Contains("Aetheryte Ticket", StringComparison.OrdinalIgnoreCase))
+                this.teleportItemIds.Add(row.RowId);
+        }
+
         if (sprintGeneralActionId == 0)
             log.Warning("Could not resolve the Sprint GeneralAction row; Sprint blocking will be unavailable.");
         if (teleportGeneralActionId == 0)
@@ -102,11 +115,34 @@ public sealed unsafe class SprintBlocker : IDisposable
             log.Warning("Could not resolve the Return GeneralAction row; Return blocking will be unavailable.");
         if (gysahlGreensItemId == 0)
             log.Warning("Could not resolve the Gysahl Greens Item row; Gysahl Greens blocking will be unavailable.");
+        if (this.teleportItemIds.Count == 0)
+            log.Warning("Could not resolve any Aetheryte Ticket item rows; Aetheryte Ticket blocking will be unavailable.");
 
         useActionHook = gameInteropProvider.HookFromAddress<ActionManager.Delegates.UseAction>(
             ActionManager.Addresses.UseAction.Value,
             DetourUseAction);
         useActionHook.Enable();
+
+        // Right-click "Use" on an item (and some hotbar item slots) calls straight into
+        // UseActionLocation without going through the hooked UseAction entry point above.
+        useActionLocationHook = gameInteropProvider.HookFromAddress<ActionManager.Delegates.UseActionLocation>(
+            ActionManager.Addresses.UseActionLocation.Value,
+            DetourUseActionLocation);
+        useActionLocationHook.Enable();
+
+        // Teleport tickets (Aetheryte Ticket, etc.) never touch ActionManager at all; the actual
+        // teleport is dispatched straight from the Teleport Town list via this invoker.
+        teleportWithTicketsHook = gameInteropProvider.HookFromAddress<Telepo.SelectUseTicketInvoker.Delegates.TeleportWithTickets>(
+            Telepo.SelectUseTicketInvoker.Addresses.TeleportWithTickets.Value,
+            DetourTeleportWithTickets);
+        teleportWithTicketsHook.Enable();
+
+        // Right-click "Use" in the inventory context menu calls this directly and may never reach
+        // ActionManager at all (e.g. items that open a follow-up UI, like Aetheryte Tickets).
+        useItemHook = gameInteropProvider.HookFromAddress<AgentInventoryContext.Delegates.UseItem>(
+            AgentInventoryContext.Addresses.UseItem.Value,
+            DetourUseItem);
+        useItemHook.Enable();
 
         this.framework.Update += this.UpdateHighlights;
     }
@@ -116,17 +152,10 @@ public sealed unsafe class SprintBlocker : IDisposable
         if (!this.IsEnabled)
             return useActionHook.Original(thisPtr, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
 
-        if (this.IsLockedAction(actionType, actionId, out var lockName))
+        if (this.TryGetBlockReason(actionType, actionId, out var blockReason))
         {
             UIGlobals.PlayChatSoundEffect(11);
-            this.toastGui.ShowError($"Locked: {lockName}");
-            return false;
-        }
-
-        if (this.IsSkillLocked(actionType, actionId, out var unlockLevel))
-        {
-            UIGlobals.PlayChatSoundEffect(11);
-            this.toastGui.ShowError($"Skill unlocks at level {unlockLevel}!");
+            this.toastGui.ShowError(blockReason);
             return false;
         }
 
@@ -134,11 +163,74 @@ public sealed unsafe class SprintBlocker : IDisposable
         return useActionHook.Original(thisPtr, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
     }
 
+    private bool DetourUseActionLocation(ActionManager* thisPtr, ActionType actionType, uint actionId, ulong targetId, System.Numerics.Vector3* location, uint extraParam, byte a7)
+    {
+        if (!this.IsEnabled)
+            return useActionLocationHook.Original(thisPtr, actionType, actionId, targetId, location, extraParam, a7);
+
+        // Don't fire ActionUsed/toast here for actions that already passed through DetourUseAction;
+        // this hook only needs to catch entry points (e.g. item right-click "Use") that skip it entirely.
+        if (this.TryGetBlockReason(actionType, actionId, out var blockReason))
+        {
+            UIGlobals.PlayChatSoundEffect(11);
+            this.toastGui.ShowError(blockReason);
+            return false;
+        }
+
+        return useActionLocationHook.Original(thisPtr, actionType, actionId, targetId, location, extraParam, a7);
+    }
+
+    private bool DetourTeleportWithTickets(Telepo.SelectUseTicketInvoker* thisPtr, uint aetheryteId, byte subIndex)
+    {
+        if (!this.IsEnabled || this.UnlockTeleportReturn)
+            return teleportWithTicketsHook.Original(thisPtr, aetheryteId, subIndex);
+
+        UIGlobals.PlayChatSoundEffect(11);
+        this.toastGui.ShowError("Locked: Teleport");
+        return false;
+    }
+
+    private long DetourUseItem(AgentInventoryContext* thisPtr, uint itemId, InventoryType inventoryType, uint itemSlot, short a5)
+    {
+        if (!this.IsEnabled)
+            return useItemHook.Original(thisPtr, itemId, inventoryType, itemSlot, a5);
+
+        if (this.TryGetBlockReason(ActionType.Item, itemId, out var blockReason))
+        {
+            UIGlobals.PlayChatSoundEffect(11);
+            this.toastGui.ShowError(blockReason);
+            return 0;
+        }
+
+        return useItemHook.Original(thisPtr, itemId, inventoryType, itemSlot, a5);
+    }
+
+    private bool TryGetBlockReason(ActionType actionType, uint actionId, out string reason)
+    {
+        if (this.IsLockedAction(actionType, actionId, out var lockName))
+        {
+            reason = $"Locked: {lockName}";
+            return true;
+        }
+
+        if (this.IsSkillLocked(actionType, actionId, out var unlockLevel))
+        {
+            reason = $"Skill unlocks at level {unlockLevel}!";
+            return true;
+        }
+
+        reason = string.Empty;
+        return false;
+    }
+
     public void Dispose()
     {
         this.framework.Update -= this.UpdateHighlights;
         this.ClearHighlights();
         useActionHook.Dispose();
+        useActionLocationHook.Dispose();
+        teleportWithTicketsHook.Dispose();
+        useItemHook.Dispose();
     }
 
     private unsafe void UpdateHighlights(IFramework _)
@@ -163,10 +255,20 @@ public sealed unsafe class SprintBlocker : IDisposable
         if (actionBar == null)
             return;
 
+        var hotbarModule = RaptureHotbarModule.Instance();
         for (var slotIndex = 0L; slotIndex < actionBar->ActionBarSlotVector.LongCount; slotIndex++)
         {
             var slot = actionBar->ActionBarSlotVector[slotIndex];
-            if (slot.Icon == null || !this.IsBlockedAction((uint)slot.ActionId))
+            if (slot.Icon == null)
+                continue;
+
+            var hotbarSlot = hotbarModule != null
+                ? hotbarModule->GetSlotById((uint)actionBar->RaptureHotbarId, (uint)slotIndex)
+                : null;
+            var isBlocked = hotbarSlot != null
+                ? this.IsBlockedHotbarSlot(hotbarSlot->CommandType, hotbarSlot->CommandId)
+                : this.IsBlockedAction((uint)slot.ActionId);
+            if (!isBlocked)
                 continue;
 
             var iconAddress = (nint)slot.Icon;
@@ -190,8 +292,22 @@ public sealed unsafe class SprintBlocker : IDisposable
            (!this.UnlockTeleportReturn && (actionId == this.teleportGeneralActionId || actionId == this.returnGeneralActionId)) ||
            this.IsSkillLocked(ActionType.Action, actionId, out _);
 
+    private bool IsBlockedHotbarSlot(RaptureHotbarModule.HotbarSlotType commandType, uint commandId)
+        => commandType switch
+        {
+            RaptureHotbarModule.HotbarSlotType.GeneralAction => (!this.UnlockSprint && commandId == this.sprintGeneralActionId) ||
+                (!this.UnlockTeleportReturn && (commandId == this.teleportGeneralActionId || commandId == this.returnGeneralActionId)),
+            RaptureHotbarModule.HotbarSlotType.Action => this.IsSkillLocked(ActionType.Action, commandId, out _),
+            RaptureHotbarModule.HotbarSlotType.Item => (!this.UnlockMounts && commandId == this.gysahlGreensItemId) ||
+                (!this.UnlockTeleportReturn && this.teleportItemIds.Contains(commandId)),
+            RaptureHotbarModule.HotbarSlotType.Mount => !this.UnlockMounts,
+            RaptureHotbarModule.HotbarSlotType.Companion or RaptureHotbarModule.HotbarSlotType.BuddyAction => !this.UnlockMounts,
+            RaptureHotbarModule.HotbarSlotType.CraftAction => !this.UnlockCrafters,
+            _ => false,
+        };
+
     private bool HasActionBarLocks
-        => !this.UnlockSprint || !this.UnlockTeleportReturn;
+        => !this.UnlockSprint || !this.UnlockTeleportReturn || !this.UnlockMounts || !this.UnlockCrafters;
 
     private bool IsLockedAction(ActionType actionType, uint actionId, out string lockName)
     {
@@ -232,6 +348,12 @@ public sealed unsafe class SprintBlocker : IDisposable
         if (!this.UnlockMounts && actionType == ActionType.Item && this.gysahlGreensItemId != 0 && actionId == this.gysahlGreensItemId)
         {
             lockName = "Gysahl Greens";
+            return true;
+        }
+
+        if (!this.UnlockTeleportReturn && actionType == ActionType.Item && this.teleportItemIds.Contains(actionId))
+        {
+            lockName = "Teleport";
             return true;
         }
 

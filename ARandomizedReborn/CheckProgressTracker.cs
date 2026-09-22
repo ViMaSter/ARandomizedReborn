@@ -43,6 +43,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private const string ZoneEvidencePrefix = "zone:";
     private const string SocietyEvidencePrefix = "society:";
     private const string MarketItemEvidencePrefix = "market-item:";
+    private const string FoodItemEvidencePrefix = "food-item:";
     private const uint MinerClassJobId = 16;
     private const uint BotanistClassJobId = 17;
     private const uint CulinarianClassJobId = 15;
@@ -97,6 +98,12 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         public int FramesRemaining { get; set; } = 300;
     }
 
+    private sealed class PendingFoodEat
+    {
+        public required uint ItemId { get; init; }
+        public int FramesRemaining { get; set; } = InventorySettleFrames * 2;
+    }
+
     private sealed class PendingBossAoe
     {
         public required ulong SourceId { get; init; }
@@ -147,6 +154,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly IAgentLifecycle agentLifecycle;
     private readonly IMarketBoard marketBoard;
     private readonly IBuddyList buddyList;
+    private readonly IPartyList partyList;
     private readonly IPluginLog log;
 
     private readonly HashSet<uint> uldahTerritoryIds = [];
@@ -181,6 +189,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private PendingItemUse? pendingCheeseUse;
     private PendingItemUse? pendingCactpotUse;
     private PendingHeal? pendingHeal;
+    private PendingFoodEat? pendingFoodEat;
     private readonly Dictionary<(ulong SourceId, uint ActionId), PendingBossAoe> pendingBossAoes = [];
     private DateTime lastDungeonBossAoeHitUtc;
     private uint previousCompanionHp;
@@ -206,6 +215,9 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private byte deepDungeonFloor;
     private bool deepDungeonFloorCounted;
     private int tickCounter;
+    private bool trialAttemptArmed;
+    private double? trialAttemptMinHpRatio;
+    private bool trialAttemptHadOtherPlayer;
 
     public CheckProgressTracker(
         Configuration configuration,
@@ -227,6 +239,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         IAgentLifecycle agentLifecycle,
         IMarketBoard marketBoard,
         IBuddyList buddyList,
+        IPartyList partyList,
         IPluginLog log)
     {
         this.configuration = configuration;
@@ -248,6 +261,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.agentLifecycle = agentLifecycle;
         this.marketBoard = marketBoard;
         this.buddyList = buddyList;
+        this.partyList = partyList;
         this.log = log;
 
         this.ResolveTerritories();
@@ -310,6 +324,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.pendingCheeseUse = null;
             this.pendingCactpotUse = null;
             this.pendingHeal = null;
+            this.pendingFoodEat = null;
+            this.trialAttemptArmed = false;
+            this.trialAttemptMinHpRatio = null;
+            this.trialAttemptHadOtherPlayer = false;
             this.pendingBossAoes.Clear();
             this.chocoboRevengeTargets.Clear();
             this.previousCompanionHp = 0;
@@ -663,12 +681,21 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.dungeonRunArmed = GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Dungeon;
         this.dungeonRunHadDeath = false;
         this.trialIntroCutsceneStarted = false;
+
+        this.trialAttemptArmed = GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Trial &&
+            !this.playerState.IsLevelSynced;
+        this.trialAttemptMinHpRatio = null;
+        this.trialAttemptHadOtherPlayer = false;
     }
 
     private void OnDutyWiped(IDutyStateEventArgs _)
     {
         if (this.dungeonRunArmed)
             this.dungeonRunHadDeath = true;
+
+        this.trialAttemptArmed = false;
+        this.trialAttemptMinHpRatio = null;
+        this.trialAttemptHadOtherPlayer = false;
 
         this.ClearDeepDungeonTracking();
         this.ClearLootTracking();
@@ -682,15 +709,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         if (this.dungeonRunArmed && DateTime.UtcNow - this.lastDungeonBossAoeHitUtc <= TimeSpan.FromMinutes(3))
             this.SetFlag("dungeon-final-boss-aoe-hit", "done", true);
 
-        if (GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Trial &&
-            !this.playerState.IsLevelSynced &&
-            this.objectTable.LocalPlayer is ICharacter { MaxHp: > 0 } localPlayer &&
-            localPlayer.CurrentHp * 10 < localPlayer.MaxHp)
+        if (this.trialAttemptArmed && this.trialAttemptMinHpRatio is { } minHpRatio && minHpRatio > 0 && minHpRatio < 0.10 &&
+            !this.trialAttemptHadOtherPlayer)
         {
-            var otherPlayers = this.objectTable.Count(gameObject =>
-                gameObject.ObjectKind == ObjectKind.Pc && gameObject.EntityId != localPlayer.EntityId);
-            if (otherPlayers == 0)
-                this.SetFlag("trial-solo-unsynced-low-hp", "win", true);
+            this.SetFlag("trial-solo-unsynced-low-hp", "win", true);
         }
 
         if (this.deepDungeonDirectorAddress != 0 && !this.deepDungeonFloorCounted)
@@ -701,8 +723,31 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         this.dungeonRunArmed = false;
         this.dungeonRunHadDeath = false;
+        this.trialAttemptArmed = false;
+        this.trialAttemptMinHpRatio = null;
+        this.trialAttemptHadOtherPlayer = false;
         this.ClearDeepDungeonTracking();
         this.ClearLootTracking();
+    }
+
+    /// <summary>Watermarks the lowest HP% seen so post-fight regen can't hide a near-death win.</summary>
+    private void TrackTrialAttempt()
+    {
+        if (!this.trialAttemptArmed)
+            return;
+
+        if (this.objectTable.LocalPlayer is not ICharacter { MaxHp: > 0, CurrentHp: > 0 } localPlayer)
+            return;
+
+        var ratio = localPlayer.CurrentHp / (double)localPlayer.MaxHp;
+        if (this.trialAttemptMinHpRatio is not { } current || ratio < current)
+            this.trialAttemptMinHpRatio = ratio;
+
+        if (!this.trialAttemptHadOtherPlayer &&
+            this.objectTable.Any(gameObject => gameObject.ObjectKind == ObjectKind.Pc && gameObject.EntityId != localPlayer.EntityId))
+        {
+            this.trialAttemptHadOtherPlayer = true;
+        }
     }
 
     private void OnConditionChanged(ConditionFlag flag, bool value)
@@ -784,7 +829,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         if (actionType == ActionType.Action &&
             this.objectTable.SearchById(targetId) is IBattleChara { ObjectKind: ObjectKind.Pc } target &&
-            target.EntityId != this.objectTable.LocalPlayer?.EntityId && target.CurrentHp > 0 && target.CurrentHp < target.MaxHp)
+            target.EntityId != this.objectTable.LocalPlayer?.EntityId && target.CurrentHp > 0 && target.CurrentHp < target.MaxHp &&
+            !this.IsPartyMember(target.EntityId))
         {
             this.SetFlag("heal-hurt-player", "target", true);
             this.pendingHeal = new PendingHeal { TargetId = targetId, HpBefore = target.CurrentHp };
@@ -812,6 +858,9 @@ public sealed unsafe class CheckProgressTracker : IDisposable
                     QuantityBefore = inventory.GetValueOrDefault(baseItemId),
                 };
             }
+
+            if (this.HasCraftedFoodEvidence("craft-and-eat-food", baseItemId) && this.GetValue("craft-and-eat-food", "eaten") == 0)
+                this.pendingFoodEat = new PendingFoodEat { ItemId = baseItemId };
         }
 
         const string prayCheckId = "pray-return-waking-sands";
@@ -1058,10 +1107,12 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.ProcessPendingCheeseUse();
         this.ProcessPendingCactpotUse();
         this.ProcessPendingHeal();
+        this.ProcessPendingFoodEat();
         this.ProcessPendingFallDamage();
         this.CaptureInnHairstyle();
         this.ProcessPendingHairstyleChange();
         this.ExpireCutsceneReplayTracking();
+        this.TrackTrialAttempt();
 
         this.tickCounter++;
         if (this.tickCounter % 30 != 0)
@@ -1074,7 +1125,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckDeepDungeonFloors();
         this.CheckStackOverflow();
         this.CheckHealTarget();
-        this.CheckWellFed();
+        this.CheckCraftedFoodSold();
         this.CheckFullArmoryCategory();
         this.CheckEmptyInventory();
         this.CheckRetainerMarketSlots();
@@ -1506,6 +1557,39 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.pendingHeal = null;
     }
 
+    /// <summary>Only counts "eaten" once Well Fed shows up after actually using a crafted food item.</summary>
+    private void ProcessPendingFoodEat()
+    {
+        if (this.pendingFoodEat == null)
+            return;
+
+        if (this.objectTable.LocalPlayer is IBattleChara localPlayer && HasWellFedStatus(localPlayer))
+        {
+            this.pendingFoodEat = null;
+            this.SetFlag("craft-and-eat-food", "eaten", true);
+            return;
+        }
+
+        if (--this.pendingFoodEat.FramesRemaining <= 0)
+            this.pendingFoodEat = null;
+    }
+
+    private static bool HasWellFedStatus(IBattleChara character)
+    {
+        for (var index = 0; index < character.StatusList.Length; index++)
+        {
+            var status = character.StatusList[index];
+            if (status == null)
+                continue;
+
+            var name = status.GameData.ValueNullable?.Name.ToString() ?? string.Empty;
+            if (name.Contains("Well Fed", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
     /// <summary>Confirms the death actually happened after the fall-damage log line fired.</summary>
     private void ProcessPendingFallDamage()
     {
@@ -1563,8 +1647,15 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
             this.pendingCraftingActions.RemoveAt(index);
             var increases = GetIncreasedItems(action.Before, this.SnapshotPlayerInventory());
-            if (increases.Any(this.mealItemIds.Contains))
-                this.SetFlag("craft-and-eat-food", "crafted", true);
+            var craftedFood = increases.Where(this.mealItemIds.Contains).ToList();
+            if (craftedFood.Count == 0)
+                continue;
+
+            var bucket = this.GetOrCreateBucket("craft-and-eat-food");
+            foreach (var itemId in craftedFood)
+                bucket[FoodItemEvidencePrefix + itemId] = 1;
+
+            this.SetFlag("craft-and-eat-food", "crafted", true);
         }
     }
 
@@ -1677,31 +1768,51 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         if (this.targetManager.Target is not IBattleChara { ObjectKind: ObjectKind.Pc } target)
             return;
 
-        if (target.CurrentHp > 0 && target.CurrentHp < target.MaxHp)
+        if (target.CurrentHp > 0 && target.CurrentHp < target.MaxHp && !this.IsPartyMember(target.EntityId))
             this.SetFlag(checkId, "target", true);
     }
 
-    private void CheckWellFed()
+    private bool IsPartyMember(uint entityId)
+    {
+        for (var index = 0; index < this.partyList.Length; index++)
+        {
+            if (this.partyList[index]?.EntityId == entityId)
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool HasCraftedFoodEvidence(string checkId, uint itemId)
+        => this.configuration.CheckStepProgress.TryGetValue(checkId, out var bucket) &&
+           bucket.ContainsKey(FoodItemEvidencePrefix + itemId);
+
+    /// <summary>Selling/discarding/trading a crafted food away resets "crafted" - they have to make it again.</summary>
+    private void CheckCraftedFoodSold()
     {
         const string checkId = "craft-and-eat-food";
         if (this.IsLockedIn(checkId) || this.GetValue(checkId, "eaten") != 0)
             return;
 
-        if (this.objectTable.LocalPlayer is not IBattleChara localPlayer)
+        if (!this.configuration.CheckStepProgress.TryGetValue(checkId, out var bucket))
             return;
 
-        for (var index = 0; index < localPlayer.StatusList.Length; index++)
-        {
-            var status = localPlayer.StatusList[index];
-            if (status == null)
-                continue;
+        var foodKeys = bucket.Keys.Where(key => key.StartsWith(FoodItemEvidencePrefix, StringComparison.Ordinal)).ToList();
+        if (foodKeys.Count == 0)
+            return;
 
-            var name = status.GameData.ValueNullable?.Name.ToString() ?? string.Empty;
-            if (name.Contains("Well Fed", StringComparison.OrdinalIgnoreCase))
-            {
-                this.SetFlag(checkId, "eaten", true);
-                return;
-            }
+        var inventory = this.SnapshotPlayerInventory();
+        foreach (var key in foodKeys)
+        {
+            var itemId = uint.Parse(key.AsSpan(FoodItemEvidencePrefix.Length));
+            if (inventory.GetValueOrDefault(itemId) == 0)
+                bucket.Remove(key);
+        }
+
+        if (!bucket.Keys.Any(key => key.StartsWith(FoodItemEvidencePrefix, StringComparison.Ordinal)))
+        {
+            bucket["crafted"] = 0;
+            this.configuration.Save();
         }
     }
 
