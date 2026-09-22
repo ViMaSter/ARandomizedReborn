@@ -49,7 +49,7 @@ public class DebugWindow : Window, IDisposable
         ImGui.Separator();
 
         using var table = ImRaii.Table("##debug-checks", 5,
-            ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingStretchProp);
+            ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.Sortable);
         if (!table.Success)
             return;
 
@@ -57,11 +57,35 @@ public class DebugWindow : Window, IDisposable
         ImGui.TableSetupColumn("Requires", ImGuiTableColumnFlags.WidthStretch, 2);
         ImGui.TableSetupColumn("On board", ImGuiTableColumnFlags.WidthStretch, 1);
         ImGui.TableSetupColumn("State", ImGuiTableColumnFlags.WidthStretch, 1.5f);
-        ImGui.TableSetupColumn("Force", ImGuiTableColumnFlags.WidthStretch, 1);
+        ImGui.TableSetupColumn("Force", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.NoSort, 1);
         ImGui.TableSetupScrollFreeze(0, 1);
         ImGui.TableHeadersRow();
 
-        foreach (var status in statuses)
+        var sortedStatuses = statuses.OrderBy(status => status.Definition.DisplayName, StringComparer.OrdinalIgnoreCase).AsEnumerable();
+        var sortSpecs = ImGui.TableGetSortSpecs();
+        if (sortSpecs.SpecsCount > 0)
+        {
+            var spec = sortSpecs.Specs;
+            var ascending = spec.SortDirection == ImGuiSortDirection.Ascending;
+            sortedStatuses = spec.ColumnIndex switch
+            {
+                0 => ascending
+                    ? statuses.OrderBy(status => status.Definition.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    : statuses.OrderByDescending(status => status.Definition.DisplayName, StringComparer.OrdinalIgnoreCase),
+                1 => ascending
+                    ? statuses.OrderBy(GetRequiresName, StringComparer.OrdinalIgnoreCase)
+                    : statuses.OrderByDescending(GetRequiresName, StringComparer.OrdinalIgnoreCase),
+                2 => ascending
+                    ? statuses.OrderBy(status => status.IsOnBoard)
+                    : statuses.OrderByDescending(status => status.IsOnBoard),
+                3 => ascending
+                    ? statuses.OrderBy(GetStateSortKey)
+                    : statuses.OrderByDescending(GetStateSortKey),
+                _ => sortedStatuses,
+            };
+        }
+
+        foreach (var status in sortedStatuses)
         {
             if (this.onlyBoardChecks && !status.IsOnBoard)
                 continue;
@@ -105,5 +129,19 @@ public class DebugWindow : Window, IDisposable
                     this.plugin.CompleteCheckManually(status.Definition.Id);
             }
         }
+    }
+
+    private static string GetRequiresName(CheckStatus status)
+        => status.Definition.RequiredUnlock is { } required
+            ? Unlocks.Definitions.First(definition => definition.Key == required).DisplayName
+            : string.Empty;
+
+    /// <summary>Orders as: not hit, not hit (manual only), overridden, detected.</summary>
+    private static int GetStateSortKey(CheckStatus status)
+    {
+        if (!status.IsComplete)
+            return status.Definition.IsFullyAutomatic ? 0 : 1;
+
+        return status.WasManualOverride ? 2 : 3;
     }
 }

@@ -60,6 +60,7 @@ public sealed class BingoSession : IDisposable
             this.configuration.ManuallyCompletedChecks.Contains(definition.Id),
             onBoard.Contains(definition.Id),
             definition.RequiredUnlock == null || Unlocks.Get(this.configuration, definition.RequiredUnlock.Value)))
+            .OrderBy(status => status.Definition.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 

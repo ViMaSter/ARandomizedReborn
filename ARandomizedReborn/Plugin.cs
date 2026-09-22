@@ -3,6 +3,7 @@ using Dalamud.Game.Chat;
 using Dalamud.Game;
 using Dalamud.IoC;
 using Dalamud.Plugin;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dalamud.Interface.Windowing;
@@ -43,6 +44,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IPartyList PartyList { get; private set; } = null!;
 
     private const string CommandName = "/randomizer";
+    private const string CommandAlias = "/rand";
 
     public Configuration Configuration { get; init; }
 
@@ -115,6 +117,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             HelpMessage = "Opens the A Randomized Reborn window."
         });
+        CommandManager.AddHandler(CommandAlias, new CommandInfo(OnCommand)
+        {
+            HelpMessage = "Opens the A Randomized Reborn window."
+        });
 
         // Tell the UI system that we want our windows to be drawn through the window system
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -153,6 +159,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         AgentRestrictionManager.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
+        CommandManager.RemoveHandler(CommandAlias);
     }
 
     private void OnCommand(string command, string args)
@@ -254,6 +261,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         foreach (var definition in Unlocks.Definitions)
             states.Add(new UnlockState(definition, Unlocks.Get(Configuration, definition.Key)));
 
+        states.Sort((a, b) => string.Compare(a.Definition.DisplayName, b.Definition.DisplayName, StringComparison.OrdinalIgnoreCase));
         return states;
     }
 
