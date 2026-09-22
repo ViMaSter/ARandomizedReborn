@@ -21,6 +21,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
+    [PluginService] internal static ICondition Condition { get; private set; } = null!;
     [PluginService] internal static IDutyState DutyState { get; private set; } = null!;
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
@@ -83,8 +84,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         InteractionRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
 
         CheckProgressTracker = new CheckProgressTracker(
-            Configuration, ReportCheck, Framework, ClientState, DutyState, TargetManager, ObjectTable, GameInventory, DataManager, SprintBlocker,
-            InteractionRestrictionManager, Log);
+            Configuration, ReportCheck, Framework, ClientState, Condition, DutyState, PlayerState, TargetManager, ObjectTable, GameInventory,
+            DataManager, SprintBlocker, InteractionRestrictionManager, Log);
         CheckProgressTracker.SetEnabled(Configuration.EnableRandomizer);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dalamud.Game;
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.DutyState;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.SubKinds;
@@ -24,6 +25,27 @@ namespace ARandomizedReborn;
 public sealed unsafe class CheckProgressTracker : IDisposable
 {
     private const string TargetSuffix = ":target";
+    private const string OreEvidencePrefix = "ore:";
+    private const string ZoneEvidencePrefix = "zone:";
+    private const uint MinerClassJobId = 16;
+    private const uint BotanistClassJobId = 17;
+    private const uint CulinarianClassJobId = 15;
+    private const int InventorySettleFrames = 15;
+
+    private sealed class PendingInventoryAction
+    {
+        public required uint ClassJobId { get; init; }
+        public required uint TerritoryId { get; init; }
+        public required Dictionary<uint, int> Before { get; init; }
+        public int FramesRemaining { get; set; } = InventorySettleFrames;
+    }
+
+    private sealed class PendingItemUse
+    {
+        public required uint ItemId { get; init; }
+        public required int QuantityBefore { get; init; }
+        public int FramesRemaining { get; set; } = InventorySettleFrames * 2;
+    }
 
     private static readonly GameInventoryType[] ArmoryCategories =
     [
@@ -53,7 +75,9 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly Func<string, bool> reportCheck;
     private readonly IFramework framework;
     private readonly IClientState clientState;
+    private readonly ICondition condition;
     private readonly IDutyState dutyState;
+    private readonly IPlayerState playerState;
     private readonly ITargetManager targetManager;
     private readonly IObjectTable objectTable;
     private readonly IGameInventory gameInventory;
@@ -63,12 +87,21 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly IPluginLog log;
 
     private readonly HashSet<uint> uldahTerritoryIds = [];
+    private readonly HashSet<uint> moonTerritoryIds = [];
     private readonly Dictionary<uint, string> startingAetheryteSteps = [];
+    private readonly HashSet<uint> cheeseItemIds = [];
+    private readonly HashSet<uint> mealItemIds = [];
+    private readonly HashSet<uint> oreItemIds = [];
     private uint wakingSandsTerritoryId;
 
     private bool enabled;
     private bool dungeonRunArmed;
     private bool dungeonRunHadDeath;
+    private PendingInventoryAction? gatheringAction;
+    private PendingInventoryAction? craftingAction;
+    private PendingItemUse? pendingCheeseUse;
+    private readonly List<PendingInventoryAction> pendingGatheringActions = [];
+    private readonly List<PendingInventoryAction> pendingCraftingActions = [];
     private int tickCounter;
 
     public CheckProgressTracker(
@@ -76,7 +109,9 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         Func<string, bool> reportCheck,
         IFramework framework,
         IClientState clientState,
+        ICondition condition,
         IDutyState dutyState,
+        IPlayerState playerState,
         ITargetManager targetManager,
         IObjectTable objectTable,
         IGameInventory gameInventory,
@@ -89,7 +124,9 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.reportCheck = reportCheck;
         this.framework = framework;
         this.clientState = clientState;
+        this.condition = condition;
         this.dutyState = dutyState;
+        this.playerState = playerState;
         this.targetManager = targetManager;
         this.objectTable = objectTable;
         this.gameInventory = gameInventory;
@@ -100,6 +137,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         this.ResolveTerritories();
         this.ResolveStartingAetherytes();
+        this.ResolveTrackedItems();
     }
 
     public void SetEnabled(bool value)
@@ -114,6 +152,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.dutyState.DutyStarted += this.OnDutyStarted;
             this.dutyState.DutyWiped += this.OnDutyWiped;
             this.dutyState.DutyCompleted += this.OnDutyCompleted;
+            this.condition.ConditionChange += this.OnConditionChanged;
             this.sprintBlocker.ActionUsed += this.OnActionUsed;
             this.interactionRestrictionManager.AetheryteInteracted += this.OnAetheryteInteracted;
             this.framework.Update += this.OnFrameworkUpdate;
@@ -124,11 +163,17 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.dutyState.DutyStarted -= this.OnDutyStarted;
             this.dutyState.DutyWiped -= this.OnDutyWiped;
             this.dutyState.DutyCompleted -= this.OnDutyCompleted;
+            this.condition.ConditionChange -= this.OnConditionChanged;
             this.sprintBlocker.ActionUsed -= this.OnActionUsed;
             this.interactionRestrictionManager.AetheryteInteracted -= this.OnAetheryteInteracted;
             this.framework.Update -= this.OnFrameworkUpdate;
             this.dungeonRunArmed = false;
             this.dungeonRunHadDeath = false;
+            this.gatheringAction = null;
+            this.craftingAction = null;
+            this.pendingCheeseUse = null;
+            this.pendingGatheringActions.Clear();
+            this.pendingCraftingActions.Clear();
         }
     }
 
@@ -267,12 +312,17 @@ public sealed unsafe class CheckProgressTracker : IDisposable
                 this.uldahTerritoryIds.Add(row.RowId);
             else if (placeName.Contains("Waking Sands", StringComparison.OrdinalIgnoreCase))
                 this.wakingSandsTerritoryId = row.RowId;
+
+            if (placeName.Contains("Mare Lamentorum", StringComparison.OrdinalIgnoreCase))
+                this.moonTerritoryIds.Add(row.RowId);
         }
 
         if (this.uldahTerritoryIds.Count == 0)
             this.log.Warning("Could not resolve any Ul'dah territory; pray-return-waking-sands tracking will be unavailable.");
         if (this.wakingSandsTerritoryId == 0)
             this.log.Warning("Could not resolve The Waking Sands territory; pray-return-waking-sands tracking will be unavailable.");
+        if (this.moonTerritoryIds.Count == 0)
+            this.log.Warning("Could not resolve Mare Lamentorum; cheese-on-the-moon tracking will be unavailable.");
     }
 
     private void ResolveStartingAetherytes()
@@ -300,6 +350,36 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             if (!this.startingAetheryteSteps.ContainsValue(stepId))
                 this.log.Warning($"Could not resolve the {stepId} starting aetheryte; three-starting-aetherytes tracking will be unavailable for that city.");
         }
+    }
+
+    private void ResolveTrackedItems()
+    {
+        foreach (var row in this.dataManager.GetExcelSheet<Item>(ClientLanguage.English))
+        {
+            var name = row.Name.ToString();
+            var uiCategory = row.ItemUICategory.ValueNullable?.Name.ToString() ?? string.Empty;
+            var searchCategory = row.ItemSearchCategory.ValueNullable?.Name.ToString() ?? string.Empty;
+
+            if (string.Equals(uiCategory, "Meal", StringComparison.OrdinalIgnoreCase) && row.ItemAction.RowId != 0)
+            {
+                this.mealItemIds.Add(row.RowId);
+                if (name.Contains("Cheese", StringComparison.OrdinalIgnoreCase))
+                    this.cheeseItemIds.Add(row.RowId);
+            }
+
+            if (string.Equals(searchCategory, "Stone", StringComparison.OrdinalIgnoreCase) &&
+                name.Contains("Ore", StringComparison.OrdinalIgnoreCase))
+            {
+                this.oreItemIds.Add(row.RowId);
+            }
+        }
+
+        if (this.mealItemIds.Count == 0)
+            this.log.Warning("Could not resolve any meal items; crafted-food tracking will be unavailable.");
+        if (this.cheeseItemIds.Count == 0)
+            this.log.Warning("Could not resolve any usable cheese items; cheese-on-the-moon tracking will be unavailable.");
+        if (this.oreItemIds.Count == 0)
+            this.log.Warning("Could not resolve any ore items; gather-five-ores tracking will be unavailable.");
     }
 
     private void OnTerritoryChanged(uint territoryId)
@@ -339,8 +419,64 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.dungeonRunHadDeath = false;
     }
 
+    private void OnConditionChanged(ConditionFlag flag, bool value)
+    {
+        if (flag == ConditionFlag.ExecutingGatheringAction)
+        {
+            if (value)
+            {
+                var classJobId = this.playerState.ClassJob.RowId;
+                if (classJobId is MinerClassJobId or BotanistClassJobId)
+                {
+                    this.gatheringAction = new PendingInventoryAction
+                    {
+                        ClassJobId = classJobId,
+                        TerritoryId = this.clientState.TerritoryType,
+                        Before = this.SnapshotPlayerInventory(),
+                    };
+                }
+            }
+            else if (this.gatheringAction != null)
+            {
+                this.pendingGatheringActions.Add(this.gatheringAction);
+                this.gatheringAction = null;
+            }
+        }
+        else if (flag == ConditionFlag.ExecutingCraftingAction)
+        {
+            if (value && this.playerState.ClassJob.RowId == CulinarianClassJobId)
+            {
+                this.craftingAction = new PendingInventoryAction
+                {
+                    ClassJobId = CulinarianClassJobId,
+                    TerritoryId = this.clientState.TerritoryType,
+                    Before = this.SnapshotPlayerInventory(),
+                };
+            }
+            else if (!value && this.craftingAction != null)
+            {
+                this.pendingCraftingActions.Add(this.craftingAction);
+                this.craftingAction = null;
+            }
+        }
+    }
+
     private void OnActionUsed(ActionType actionType, uint actionId)
     {
+        if (actionType == ActionType.Item && this.moonTerritoryIds.Contains(this.clientState.TerritoryType))
+        {
+            var baseItemId = NormalizeItemActionId(actionId);
+            if (this.cheeseItemIds.Contains(baseItemId))
+            {
+                var inventory = this.SnapshotPlayerInventory();
+                this.pendingCheeseUse = new PendingItemUse
+                {
+                    ItemId = baseItemId,
+                    QuantityBefore = inventory.GetValueOrDefault(baseItemId),
+                };
+            }
+        }
+
         const string prayCheckId = "pray-return-waking-sands";
         if (!this.IsLockedIn(prayCheckId) &&
             actionType == ActionType.GeneralAction &&
@@ -385,6 +521,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private void OnFrameworkUpdate(IFramework _)
     {
         this.CheckDungeonDeath();
+        this.ProcessPendingInventoryActions();
+        this.ProcessPendingCheeseUse();
 
         this.tickCounter++;
         if (this.tickCounter % 30 != 0)
@@ -396,6 +534,108 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckWellFed();
         this.CheckFullArmoryCategory();
         this.CheckEmptyInventory();
+        this.CheckRetainerMarketSlots();
+    }
+
+    private void ProcessPendingCheeseUse()
+    {
+        if (this.pendingCheeseUse == null)
+            return;
+
+        var inventory = this.SnapshotPlayerInventory();
+        if (inventory.GetValueOrDefault(this.pendingCheeseUse.ItemId) < this.pendingCheeseUse.QuantityBefore)
+        {
+            this.pendingCheeseUse = null;
+            this.SetFlag("cheese-on-the-moon", "done", true);
+            return;
+        }
+
+        if (--this.pendingCheeseUse.FramesRemaining <= 0)
+            this.pendingCheeseUse = null;
+    }
+
+    private static uint NormalizeItemActionId(uint actionId)
+        => actionId is >= 1_000_000 and < 2_000_000 ? actionId - 1_000_000 : actionId;
+
+    private void ProcessPendingInventoryActions()
+    {
+        for (var index = this.pendingGatheringActions.Count - 1; index >= 0; index--)
+        {
+            var action = this.pendingGatheringActions[index];
+            if (--action.FramesRemaining > 0)
+                continue;
+
+            this.pendingGatheringActions.RemoveAt(index);
+            var increases = GetIncreasedItems(action.Before, this.SnapshotPlayerInventory());
+            if (increases.Count == 0)
+                continue;
+
+            if (action.ClassJobId == MinerClassJobId)
+            {
+                foreach (var itemId in increases.Where(this.oreItemIds.Contains))
+                    this.AddDistinctEvidence("gather-five-ores", "ores", OreEvidencePrefix, itemId);
+            }
+            else if (action.ClassJobId == BotanistClassJobId)
+            {
+                this.AddDistinctEvidence("gather-three-zones", "zones", ZoneEvidencePrefix, action.TerritoryId);
+            }
+        }
+
+        for (var index = this.pendingCraftingActions.Count - 1; index >= 0; index--)
+        {
+            var action = this.pendingCraftingActions[index];
+            if (--action.FramesRemaining > 0)
+                continue;
+
+            this.pendingCraftingActions.RemoveAt(index);
+            var increases = GetIncreasedItems(action.Before, this.SnapshotPlayerInventory());
+            if (increases.Any(this.mealItemIds.Contains))
+                this.SetFlag("craft-and-eat-food", "crafted", true);
+        }
+    }
+
+    private Dictionary<uint, int> SnapshotPlayerInventory()
+    {
+        var totals = new Dictionary<uint, int>();
+        foreach (var page in PlayerInventoryPages)
+        {
+            foreach (var item in this.gameInventory.GetInventoryItems(page))
+            {
+                if (item.IsEmpty || item.BaseItemId == 0)
+                    continue;
+
+                totals[item.BaseItemId] = totals.GetValueOrDefault(item.BaseItemId) + item.Quantity;
+            }
+        }
+
+        return totals;
+    }
+
+    private static HashSet<uint> GetIncreasedItems(IReadOnlyDictionary<uint, int> before, IReadOnlyDictionary<uint, int> after)
+    {
+        var increased = new HashSet<uint>();
+        foreach (var (itemId, quantity) in after)
+        {
+            if (quantity > before.GetValueOrDefault(itemId))
+                increased.Add(itemId);
+        }
+
+        return increased;
+    }
+
+    private void AddDistinctEvidence(string checkId, string stepId, string prefix, uint value)
+    {
+        if (this.IsLockedIn(checkId))
+            return;
+
+        var bucket = this.GetOrCreateBucket(checkId);
+        if (!bucket.TryAdd(prefix + value, 1))
+            return;
+
+        var count = bucket.Keys.Count(key => key.StartsWith(prefix, StringComparison.Ordinal));
+        bucket[stepId] = Math.Max(bucket.GetValueOrDefault(stepId), count);
+        this.Evaluate(checkId);
+        this.configuration.Save();
     }
 
     private void CheckGearDye()
@@ -541,6 +781,26 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         }
 
         this.SetFlag(checkId, "done", true);
+    }
+
+    private void CheckRetainerMarketSlots()
+    {
+        const string checkId = "retainer-fill-sale-slots";
+        if (this.IsLockedIn(checkId))
+            return;
+
+        var items = this.gameInventory.GetInventoryItems(GameInventoryType.RetainerMarket);
+        if (items.Length == 0)
+            return;
+
+        var filledSlots = 0;
+        foreach (var item in items)
+        {
+            if (!item.IsEmpty && item.ItemId != 0)
+                filledSlots++;
+        }
+
+        this.SetCounterAtLeast(checkId, "slots", filledSlots);
     }
 
     private void CheckDungeonDeath()

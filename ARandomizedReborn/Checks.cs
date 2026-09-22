@@ -142,10 +142,10 @@ public static class Checks
             Manual("Catch a time-restricted fish")),
         new("gather-five-ores", "Gather five kinds of ore",
             "Mine five different kinds of ore.", UnlockKey.Gatherers,
-            ManualCount("ores", "Different kinds of ore gathered", 5)),
+            AutoCount("ores", "Different kinds of ore gathered", 5)),
         new("gather-three-zones", "Harvest across three zones",
             "Harvest items from three different zones.", UnlockKey.Gatherers,
-            ManualCount("zones", "Different zones harvested in", 3)),
+            AutoCount("zones", "Different zones harvested in", 3)),
         new("gather-thousand-resource", "Overflow a stack",
             "Gather enough of one resource that it takes up two inventory slots (1000).", UnlockKey.Gatherers,
             AutoCount("stack", "Highest single-item stack gathered", 1000)),
@@ -154,7 +154,7 @@ public static class Checks
         new("craft-and-eat-food", "Craft food, then eat it",
             "Craft any meal and consume it.", UnlockKey.Crafters,
             Steps(
-                new("crafted", "Craft a meal", ProgressStepKind.Flag),
+                new("crafted", "Craft a meal", ProgressStepKind.Flag, Automatic: true),
                 new("eaten", "Eat it (Well Fed)", ProgressStepKind.Flag, Automatic: true))),
 
         // Trials.
@@ -194,7 +194,7 @@ public static class Checks
             Auto("Empty your inventory")),
         new("retainer-fill-sale-slots", "Fill all sale slots",
             "Fill up all 20 of one retainer's sale slots.", UnlockKey.Retainers,
-            ManualCount("slots", "Retainer sale slots filled", 20)),
+            AutoCount("slots", "Retainer sale slots filled", 20)),
 
         // Mounts / chocobo.
         new("chocobo-revenge", "Chocobo revenge",
@@ -209,7 +209,7 @@ public static class Checks
         // Teleport / Return.
         new("cheese-on-the-moon", "Cheese on the moon",
             "Consume a cheese consumable while on the moon.", UnlockKey.TeleportReturn,
-            Manual("Eat cheese while on the moon")),
+            Auto("Eat cheese while on the moon")),
     ];
 
 
