@@ -18,6 +18,8 @@ using Dalamud.Game.Inventory;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using FFXIVClientStructs.FFXIV.Client.Game.Event;
 using FFXIVClientStructs.FFXIV.Client.Game.GoldSaucer;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -39,12 +41,15 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private const string TargetSuffix = ":target";
     private const string OreEvidencePrefix = "ore:";
     private const string ZoneEvidencePrefix = "zone:";
+    private const string SocietyEvidencePrefix = "society:";
     private const uint MinerClassJobId = 16;
     private const uint BotanistClassJobId = 17;
     private const uint CulinarianClassJobId = 15;
     private const int InventorySettleFrames = 15;
     private const int PendingLootFrames = 300;
     private const int HairstyleSettleFrames = 1800;
+
+    private static readonly HashSet<byte> EliteMarkBillIndices = [4, 5, 9, 13, 17, 21];
 
     private sealed class FateAttempt
     {
@@ -135,6 +140,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly HashSet<uint> oreItemIds = [];
     private readonly HashSet<uint> miniCactpotItemIds = [];
     private readonly HashSet<uint> fallDamageLogMessageIds = [];
+    private readonly Dictionary<byte, (int OrderRowId, bool IsComplete)> markBillStates = [];
+    private readonly Dictionary<ushort, (bool IsCompleted, uint SocietyId)> dailyQuestSnapshot = [];
     private uint wakingSandsTerritoryId;
 
     private bool enabled;
@@ -159,6 +166,11 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private bool cutsceneReplayStarted;
     private DateTime cutsceneReplayArmedUtc;
     private GateAttempt? gateAttempt;
+    private bool dailyQuestSnapshotInitialized;
+    private nint deepDungeonDirectorAddress;
+    private byte deepDungeonId;
+    private byte deepDungeonFloor;
+    private bool deepDungeonFloorCounted;
     private int tickCounter;
 
     public CheckProgressTracker(
@@ -257,6 +269,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.pendingCheeseUse = null;
             this.pendingCactpotUse = null;
             this.fallDamageFramesRemaining = 0;
+            this.markBillStates.Clear();
+            this.dailyQuestSnapshot.Clear();
+            this.dailyQuestSnapshotInitialized = false;
+            this.ClearDeepDungeonTracking();
             this.pendingGatheringActions.Clear();
             this.pendingCraftingActions.Clear();
             this.ResetTransientContentTracking();
@@ -553,6 +569,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         if (this.dungeonRunArmed)
             this.dungeonRunHadDeath = true;
 
+        this.ClearDeepDungeonTracking();
         this.ClearLootTracking();
     }
 
@@ -561,8 +578,15 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         if (this.dungeonRunArmed && !this.dungeonRunHadDeath)
             this.SetFlag("dungeon-no-deaths", "done", true);
 
+        if (this.deepDungeonDirectorAddress != 0 && !this.deepDungeonFloorCounted)
+        {
+            this.deepDungeonFloorCounted = true;
+            this.AdjustCounter("deepdungeon-clear-ten-floors", "floors", 1);
+        }
+
         this.dungeonRunArmed = false;
         this.dungeonRunHadDeath = false;
+        this.ClearDeepDungeonTracking();
         this.ClearLootTracking();
     }
 
@@ -834,6 +858,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             return;
 
         this.CheckGearDye();
+        this.CheckSeatedInChair();
+        this.CheckMarkBills();
+        this.CheckSocietyDailies();
+        this.CheckDeepDungeonFloors();
         this.CheckStackOverflow();
         this.CheckHealTarget();
         this.CheckWellFed();
@@ -844,6 +872,170 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckLootRolls();
         this.ProcessPendingGreedRolls();
         this.CheckGateAttempt();
+    }
+
+    private void CheckSeatedInChair()
+    {
+        if (this.objectTable.LocalPlayer is not ICharacter localPlayer)
+            return;
+
+        var character = (Character*)localPlayer.Address;
+        if (character == null || character->EmoteController.GetPosture() != EmoteController.Posture.SittingInChair)
+            return;
+
+        if (this.cityStateTerritoryNames.ContainsKey(this.clientState.TerritoryType))
+            this.SetFlag("sit-bench-city-state", "done", true);
+
+        if (GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.HousingIndoor)
+            this.SetFlag("housing-sit-chair", "done", true);
+    }
+
+    private void CheckMarkBills()
+    {
+        const string checkId = "mark-bill-five-hunts";
+        if (this.IsLockedIn(checkId))
+            return;
+
+        var mobHunt = MobHunt.Instance();
+        if (mobHunt == null)
+            return;
+
+        var orders = this.dataManager.GetSubrowExcelSheet<MobHuntOrder>(ClientLanguage.English);
+        for (byte markIndex = 0; markIndex < MobHunt.MaxMarkIndex; markIndex++)
+        {
+            if (EliteMarkBillIndices.Contains(markIndex) || !mobHunt->IsMarkBillObtained(markIndex))
+                continue;
+
+            var orderRowId = mobHunt->GetObtainedHuntOrderRowId(markIndex);
+            if (orderRowId <= 0)
+                continue;
+
+            var isComplete = true;
+            for (ushort targetIndex = 0; targetIndex < 5; targetIndex++)
+            {
+                if (!orders.TryGetSubrow((uint)orderRowId, targetIndex, out var order) ||
+                    mobHunt->GetKillCount(markIndex, (byte)targetIndex) < order.NeededKills)
+                {
+                    isComplete = false;
+                    break;
+                }
+            }
+
+            if (!this.markBillStates.TryGetValue(markIndex, out var previous) || previous.OrderRowId != orderRowId)
+            {
+                this.markBillStates[markIndex] = (orderRowId, isComplete);
+                continue;
+            }
+
+            this.markBillStates[markIndex] = (orderRowId, isComplete);
+            if (!previous.IsComplete && isComplete)
+            {
+                this.SetCounterAtLeast(checkId, "hunts", 5);
+                return;
+            }
+        }
+    }
+
+    private void CheckSocietyDailies()
+    {
+        const string checkId = "society-three-dailies";
+        if (this.IsLockedIn(checkId))
+            return;
+
+        var questManager = QuestManager.Instance();
+        if (questManager == null)
+            return;
+
+        var questSheet = this.dataManager.GetExcelSheet<Quest>(ClientLanguage.English, "Quest");
+        var current = new Dictionary<ushort, (bool IsCompleted, uint SocietyId)>();
+        foreach (ref var dailyQuest in questManager->DailyQuests)
+        {
+            if (dailyQuest.QuestId == 0 ||
+                !questSheet.TryGetRow(0x10000u + dailyQuest.QuestId, out var quest) ||
+                quest.BeastTribe.RowId == 0)
+            {
+                continue;
+            }
+
+            current[dailyQuest.QuestId] = (dailyQuest.IsCompleted, quest.BeastTribe.RowId);
+        }
+
+        if (this.dailyQuestSnapshotInitialized)
+        {
+            foreach (var (questId, previous) in this.dailyQuestSnapshot)
+            {
+                if (previous.IsCompleted && !current.ContainsKey(questId))
+                    this.AddSocietyDailyEvidence(previous.SocietyId, questId);
+            }
+        }
+
+        this.dailyQuestSnapshot.Clear();
+        foreach (var (questId, state) in current)
+            this.dailyQuestSnapshot[questId] = state;
+        this.dailyQuestSnapshotInitialized = true;
+    }
+
+    private void AddSocietyDailyEvidence(uint societyId, ushort questId)
+    {
+        const string checkId = "society-three-dailies";
+        var bucket = this.GetOrCreateBucket(checkId);
+        var resetCycle = (DateTimeOffset.UtcNow - TimeSpan.FromHours(15)).ToUnixTimeSeconds() / (24 * 60 * 60);
+        var societyPrefix = $"{SocietyEvidencePrefix}{societyId}:";
+        if (!bucket.TryAdd($"{societyPrefix}{resetCycle}:{questId}", 1))
+            return;
+
+        var count = bucket.Keys.Count(key => key.StartsWith(societyPrefix, StringComparison.Ordinal));
+        bucket["dailies"] = Math.Max(bucket.GetValueOrDefault("dailies"), count);
+        this.Evaluate(checkId);
+        this.configuration.Save();
+    }
+
+    private void CheckDeepDungeonFloors()
+    {
+        const string checkId = "deepdungeon-clear-ten-floors";
+        if (this.IsLockedIn(checkId))
+            return;
+
+        if (!this.condition[ConditionFlag.InDeepDungeon])
+        {
+            this.ClearDeepDungeonTracking();
+            return;
+        }
+
+        var eventFramework = EventFramework.Instance();
+        var director = eventFramework == null ? null : eventFramework->GetInstanceContentDeepDungeon();
+        if (director == null || director->Floor == 0)
+            return;
+
+        var directorAddress = (nint)director;
+        if (this.deepDungeonDirectorAddress != directorAddress || this.deepDungeonId != director->DeepDungeonId || this.deepDungeonFloor == 0)
+        {
+            this.deepDungeonDirectorAddress = directorAddress;
+            this.deepDungeonId = director->DeepDungeonId;
+            this.deepDungeonFloor = director->Floor;
+            this.deepDungeonFloorCounted = false;
+            return;
+        }
+
+        if (director->Floor > this.deepDungeonFloor)
+        {
+            this.AdjustCounter(checkId, "floors", director->Floor - this.deepDungeonFloor);
+            this.deepDungeonFloor = director->Floor;
+            this.deepDungeonFloorCounted = false;
+        }
+        else if (director->Floor < this.deepDungeonFloor)
+        {
+            this.deepDungeonFloor = director->Floor;
+            this.deepDungeonFloorCounted = false;
+        }
+    }
+
+    private void ClearDeepDungeonTracking()
+    {
+        this.deepDungeonDirectorAddress = 0;
+        this.deepDungeonId = 0;
+        this.deepDungeonFloor = 0;
+        this.deepDungeonFloorCounted = false;
     }
 
     private void CheckFateAttempts()

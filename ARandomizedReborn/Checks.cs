@@ -53,7 +53,7 @@ public static class Checks
             Auto("Arrive in another city-state via airship")),
         new("mark-bill-five-hunts", "Clear a full mark bill",
             "Complete all five hunts on a single (daily) regular mark bill.", null,
-            ManualCount("hunts", "Hunts completed on the bill", 5)),
+            AutoCount("hunts", "Hunts completed on the bill", 5)),
         new("tint-gear-same-color", "Tint all your gear the same color",
             "Dye every equipped piece of gear with the same dye.", null,
             AutoCount("matching", "Equipped pieces sharing one dye", 2)),
@@ -62,7 +62,7 @@ public static class Checks
             Auto("Fill every slot in one armory chest category")),
         new("sit-bench-city-state", "Sit on a bench in any city-state",
             "Use a bench (not /sit on the ground) inside a city-state.", null,
-            Manual("Sit on a bench in a city-state")),
+            Auto("Sit on a bench in a city-state")),
         new("die-fall-damage", "Die from fall damage",
             "Take a lethal drop.", null,
             Auto("Die from fall damage")),
@@ -93,7 +93,7 @@ public static class Checks
         // Housing.
         new("housing-sit-chair", "Sit in a chair in someone's house",
             "Enter another player's or FC house and sit in a chair.", UnlockKey.Housing,
-            Manual("Sit in a chair in someone's house")),
+            Auto("Sit in a chair in someone's house")),
         new("housing-guestbook-message", "Write a nice guestbook message",
             "Leave a friendly message in a house guestbook.", UnlockKey.Housing,
             Manual("Write a nice guestbook message")),
@@ -101,7 +101,7 @@ public static class Checks
         // Allied societies.
         new("society-three-dailies", "Allied society regular",
             "Complete three daily quests for a single allied society.", UnlockKey.AlliedSocieties,
-            ManualCount("dailies", "Daily quests completed for one society", 3)),
+            AutoCount("dailies", "Daily quests completed for one society", 3)),
 
         // Deep dungeon.
         new("deepdungeon-step-trap", "Step on a trap",
@@ -109,7 +109,7 @@ public static class Checks
             Manual("Step on a trap")),
         new("deepdungeon-clear-ten-floors", "Clear 10 floors",
             "Clear ten deep dungeon floors.", UnlockKey.DeepDungeon,
-            ManualCount("floors", "Floors cleared", 10)),
+            AutoCount("floors", "Floors cleared", 10)),
         new("deepdungeon-die-to-boss", "Die to a deep dungeon boss",
             "Die to a boss fight before reaching the checkpoint.", UnlockKey.DeepDungeon,
             Manual("Die to a boss before the checkpoint")),
