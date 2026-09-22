@@ -120,8 +120,8 @@ public static class Checks
 
         // Gold Saucer.
         new("goldsaucer-mini-cactpot", "Play the Mini Cactpot",
-            "Buy and play a Mini Cactpot ticket.", UnlockKey.GoldSaucer,
-            Auto("Play a Mini Cactpot ticket")),
+            "Use all 3 of your daily Mini Cactpot tickets.", UnlockKey.GoldSaucer,
+            Auto("Use all 3 daily Mini Cactpot tickets")),
         new("goldsaucer-triple-triad-win", "Win a match of Triple Triad",
             "Beat any Triple Triad opponent.", UnlockKey.GoldSaucer,
             Auto("Win a Triple Triad match")),

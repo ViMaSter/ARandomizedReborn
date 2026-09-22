@@ -164,7 +164,6 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly HashSet<uint> cheeseItemIds = [];
     private readonly HashSet<uint> mealItemIds = [];
     private readonly HashSet<uint> oreItemIds = [];
-    private readonly HashSet<uint> miniCactpotItemIds = [];
     private readonly HashSet<uint> fallDamageLogMessageIds = [];
     private readonly HashSet<uint> guestbookMessageLogIds = [];
     private readonly HashSet<uint> deepDungeonTrapLogIds = [];
@@ -187,7 +186,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private PendingInventoryAction? gatheringAction;
     private PendingInventoryAction? craftingAction;
     private PendingItemUse? pendingCheeseUse;
-    private PendingItemUse? pendingCactpotUse;
+    private int previousCactpotStatus;
+    private int cactpotPlaysCompleted;
     private PendingHeal? pendingHeal;
     private PendingFoodEat? pendingFoodEat;
     private readonly Dictionary<(ulong SourceId, uint ActionId), PendingBossAoe> pendingBossAoes = [];
@@ -287,6 +287,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.sprintBlocker.ActionUsed += this.OnActionUsed;
             this.interactionRestrictionManager.AetheryteInteracted += this.OnAetheryteInteracted;
             this.chatGui.LogMessage += this.OnLogMessage;
+            this.chatGui.ChatMessageHandled += this.OnChatMessage;
             this.marketBoard.ItemPurchased += this.OnMarketItemPurchased;
             this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskAsk", this.OnVentureStartedAddon);
             this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskResult", this.OnVentureCompletedAddon);
@@ -307,6 +308,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.sprintBlocker.ActionUsed -= this.OnActionUsed;
             this.interactionRestrictionManager.AetheryteInteracted -= this.OnAetheryteInteracted;
             this.chatGui.LogMessage -= this.OnLogMessage;
+            this.chatGui.ChatMessageHandled -= this.OnChatMessage;
             this.marketBoard.ItemPurchased -= this.OnMarketItemPurchased;
             this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskAsk", this.OnVentureStartedAddon);
             this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskResult", this.OnVentureCompletedAddon);
@@ -322,7 +324,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.gatheringAction = null;
             this.craftingAction = null;
             this.pendingCheeseUse = null;
-            this.pendingCactpotUse = null;
+            this.previousCactpotStatus = 0;
+            this.cactpotPlaysCompleted = 0;
             this.pendingHeal = null;
             this.pendingFoodEat = null;
             this.trialAttemptArmed = false;
@@ -560,8 +563,6 @@ public sealed unsafe class CheckProgressTracker : IDisposable
                 this.oreItemIds.Add(row.RowId);
             }
 
-            if (name.Contains("Mini Cactpot", StringComparison.OrdinalIgnoreCase) && row.ItemAction.RowId != 0)
-                this.miniCactpotItemIds.Add(row.RowId);
         }
 
         foreach (var row in this.dataManager.GetExcelSheet<FishingNoteInfo>(ClientLanguage.English))
@@ -576,8 +577,6 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.log.Warning("Could not resolve any usable cheese items; cheese-on-the-moon tracking will be unavailable.");
         if (this.oreItemIds.Count == 0)
             this.log.Warning("Could not resolve any ore items; gather-five-ores tracking will be unavailable.");
-        if (this.miniCactpotItemIds.Count == 0)
-            this.log.Warning("Could not resolve the Mini Cactpot ticket item; goldsaucer-mini-cactpot tracking will be unavailable.");
     }
 
     /// <summary>Scans the LogMessage sheet for the fall-damage combat log line instead of hardcoding a curated ID.</summary>
@@ -849,16 +848,6 @@ public sealed unsafe class CheckProgressTracker : IDisposable
                 };
             }
 
-            if (this.miniCactpotItemIds.Contains(baseItemId))
-            {
-                var inventory = this.SnapshotPlayerInventory();
-                this.pendingCactpotUse = new PendingItemUse
-                {
-                    ItemId = baseItemId,
-                    QuantityBefore = inventory.GetValueOrDefault(baseItemId),
-                };
-            }
-
             if (this.HasCraftedFoodEvidence("craft-and-eat-food", baseItemId) && this.GetValue("craft-and-eat-food", "eaten") == 0)
                 this.pendingFoodEat = new PendingFoodEat { ItemId = baseItemId };
         }
@@ -912,6 +901,19 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         if (this.marketSaleLogIds.Contains(message.LogMessageId) && this.MarketSaleMatchesPurchasedItem(message))
             this.SetFlag("retainer-market-flip", "resold", true);
+    }
+
+    /// <summary>Catches the case where all 3 daily Mini Cactpot tickets were already used before this session could count them.</summary>
+    private void OnChatMessage(Dalamud.Game.Chat.IChatMessage message)
+    {
+        if (message.LogKind != Dalamud.Game.Text.XivChatType.NPCDialogue)
+            return;
+
+        if (message.Message.TextValue.Contains("only purchase three Mini Cactpot tickets a day", StringComparison.OrdinalIgnoreCase))
+        {
+            this.cactpotPlaysCompleted = 3;
+            this.SetFlag("goldsaucer-mini-cactpot", "done", true);
+        }
     }
 
     private void OnMarketItemPurchased(Dalamud.Game.Network.Structures.IMarketBoardPurchase purchase)
@@ -1105,7 +1107,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckDungeonDeath();
         this.ProcessPendingInventoryActions();
         this.ProcessPendingCheeseUse();
-        this.ProcessPendingCactpotUse();
+        this.CheckMiniCactpot();
         this.ProcessPendingHeal();
         this.ProcessPendingFoodEat();
         this.ProcessPendingFallDamage();
@@ -1523,21 +1525,17 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.pendingCheeseUse = null;
     }
 
-    private void ProcessPendingCactpotUse()
+    /// <summary>Counts completed plays via the AgentLotteryDaily payout status; marks done once all 3 daily allowances are used.</summary>
+    private void CheckMiniCactpot()
     {
-        if (this.pendingCactpotUse == null)
-            return;
+        var agentModule = AgentModule.Instance();
+        var agent = agentModule == null ? null : (AgentLotteryDaily*)agentModule->GetAgentByInternalId(FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentId.LotteryDaily);
+        var status = agent == null ? 0 : agent->Status;
 
-        var inventory = this.SnapshotPlayerInventory();
-        if (inventory.GetValueOrDefault(this.pendingCactpotUse.ItemId) < this.pendingCactpotUse.QuantityBefore)
-        {
-            this.pendingCactpotUse = null;
+        if (status == 4 && this.previousCactpotStatus != 4 && ++this.cactpotPlaysCompleted >= 3)
             this.SetFlag("goldsaucer-mini-cactpot", "done", true);
-            return;
-        }
 
-        if (--this.pendingCactpotUse.FramesRemaining <= 0)
-            this.pendingCactpotUse = null;
+        this.previousCactpotStatus = status;
     }
 
     private void ProcessPendingHeal()
