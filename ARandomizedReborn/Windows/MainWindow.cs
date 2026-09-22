@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game;
@@ -13,6 +15,8 @@ namespace ARandomizedReborn.Windows;
 public class MainWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
+    private readonly Dictionary<string, bool> checkGroupExpanded = [];
+    private bool? pendingCheckGroupToggle;
 
     public MainWindow(Plugin plugin)
         : base("A Randomized Reborn###ARandomizedRebornMain", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
@@ -81,12 +85,15 @@ public class MainWindow : Window, IDisposable
         ImGui.Spacing();
         if (ImGui.CollapsingHeader("Checks", ImGuiTreeNodeFlags.DefaultOpen))
         {
+            // Shift-click toggles every subgroup at once instead of just this header.
+            if (ImGui.IsItemClicked(ImGuiMouseButton.Left) && ImGui.GetIO().KeyShift)
+                this.pendingCheckGroupToggle = this.checkGroupExpanded.Count == 0 || this.checkGroupExpanded.Values.Any(open => !open);
+
             using var checksChild = ImRaii.Child("ChecksChild", new Vector2(0, halfHeight), true);
             if (checksChild.Success)
-            {
-                foreach (var status in plugin.BingoSession.GetCheckStatuses())
-                    DrawCheckEntry(plugin, status);
-            }
+                DrawGroupedChecks(plugin);
+
+            this.pendingCheckGroupToggle = null;
         }
 
         if (ImGui.Button("Reset State"))
@@ -171,6 +178,39 @@ public class MainWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(description);
+    }
+
+    /// <summary>Checks grouped by required unlock, each group collapsible on its own.</summary>
+    private void DrawGroupedChecks(Plugin plugin)
+    {
+        var groups = plugin.BingoSession.GetCheckStatuses()
+            .GroupBy(status => status.Definition.RequiredUnlock)
+            .OrderBy(group => group.Key.HasValue)
+            .ThenBy(
+                group => group.Key.HasValue ? Unlocks.Definitions.First(unlock => unlock.Key == group.Key.Value).DisplayName : string.Empty,
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in groups)
+        {
+            var label = group.Key.HasValue
+                ? Unlocks.Definitions.First(unlock => unlock.Key == group.Key.Value).DisplayName
+                : "No requirement";
+
+            using var pushId = ImRaii.PushId($"checkgroup-{group.Key?.ToString() ?? "none"}");
+
+            if (this.pendingCheckGroupToggle.HasValue)
+                ImGui.SetNextItemOpen(this.pendingCheckGroupToggle.Value, ImGuiCond.Always);
+
+            var open = ImGui.CollapsingHeader(label, ImGuiTreeNodeFlags.DefaultOpen);
+            this.checkGroupExpanded[label] = open;
+
+            if (!open)
+                continue;
+
+            using var indent = ImRaii.PushIndent();
+            foreach (var status in group)
+                DrawCheckEntry(plugin, status);
+        }
     }
 
     /// <summary>An expandable check row: overall state at a glance, per-step progress when opened.</summary>
