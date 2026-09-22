@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dalamud.Game;
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
+using Dalamud.Game.Chat;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.DutyState;
 using Dalamud.Game.ClientState.Objects.Enums;
@@ -11,6 +14,7 @@ using Dalamud.Game.Inventory;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using Lumina.Excel.Sheets;
 using ClientTerritoryIntendedUse = FFXIVClientStructs.FFXIV.Client.Enums.TerritoryIntendedUse;
 
@@ -84,22 +88,31 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly IDataManager dataManager;
     private readonly SprintBlocker sprintBlocker;
     private readonly InteractionRestrictionManager interactionRestrictionManager;
+    private readonly IChatGui chatGui;
+    private readonly IAddonLifecycle addonLifecycle;
     private readonly IPluginLog log;
 
     private readonly HashSet<uint> uldahTerritoryIds = [];
     private readonly HashSet<uint> moonTerritoryIds = [];
     private readonly Dictionary<uint, string> startingAetheryteSteps = [];
+    private readonly Dictionary<uint, string> cityStateTerritoryNames = [];
     private readonly HashSet<uint> cheeseItemIds = [];
     private readonly HashSet<uint> mealItemIds = [];
     private readonly HashSet<uint> oreItemIds = [];
+    private readonly HashSet<uint> miniCactpotItemIds = [];
+    private readonly HashSet<uint> fallDamageLogMessageIds = [];
     private uint wakingSandsTerritoryId;
 
     private bool enabled;
     private bool dungeonRunArmed;
     private bool dungeonRunHadDeath;
+    private bool suppressAirshipCheck;
+    private string? lastCityStateName;
     private PendingInventoryAction? gatheringAction;
     private PendingInventoryAction? craftingAction;
     private PendingItemUse? pendingCheeseUse;
+    private PendingItemUse? pendingCactpotUse;
+    private int fallDamageFramesRemaining;
     private readonly List<PendingInventoryAction> pendingGatheringActions = [];
     private readonly List<PendingInventoryAction> pendingCraftingActions = [];
     private int tickCounter;
@@ -118,6 +131,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         IDataManager dataManager,
         SprintBlocker sprintBlocker,
         InteractionRestrictionManager interactionRestrictionManager,
+        IChatGui chatGui,
+        IAddonLifecycle addonLifecycle,
         IPluginLog log)
     {
         this.configuration = configuration;
@@ -133,11 +148,14 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.dataManager = dataManager;
         this.sprintBlocker = sprintBlocker;
         this.interactionRestrictionManager = interactionRestrictionManager;
+        this.chatGui = chatGui;
+        this.addonLifecycle = addonLifecycle;
         this.log = log;
 
         this.ResolveTerritories();
         this.ResolveStartingAetherytes();
         this.ResolveTrackedItems();
+        this.ResolveFallDamageLogMessages();
     }
 
     public void SetEnabled(bool value)
@@ -155,6 +173,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.condition.ConditionChange += this.OnConditionChanged;
             this.sprintBlocker.ActionUsed += this.OnActionUsed;
             this.interactionRestrictionManager.AetheryteInteracted += this.OnAetheryteInteracted;
+            this.chatGui.LogMessage += this.OnLogMessage;
+            this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskAsk", this.OnVentureStartedAddon);
+            this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskResult", this.OnVentureCompletedAddon);
+            this.addonLifecycle.RegisterListener(AddonEvent.PreFinalize, "TripleTriad", this.OnTripleTriadClosing);
             this.framework.Update += this.OnFrameworkUpdate;
         }
         else
@@ -166,12 +188,19 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.condition.ConditionChange -= this.OnConditionChanged;
             this.sprintBlocker.ActionUsed -= this.OnActionUsed;
             this.interactionRestrictionManager.AetheryteInteracted -= this.OnAetheryteInteracted;
+            this.chatGui.LogMessage -= this.OnLogMessage;
+            this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskAsk", this.OnVentureStartedAddon);
+            this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskResult", this.OnVentureCompletedAddon);
+            this.addonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "TripleTriad", this.OnTripleTriadClosing);
             this.framework.Update -= this.OnFrameworkUpdate;
             this.dungeonRunArmed = false;
             this.dungeonRunHadDeath = false;
+            this.suppressAirshipCheck = false;
             this.gatheringAction = null;
             this.craftingAction = null;
             this.pendingCheeseUse = null;
+            this.pendingCactpotUse = null;
+            this.fallDamageFramesRemaining = 0;
             this.pendingGatheringActions.Clear();
             this.pendingCraftingActions.Clear();
         }
@@ -315,6 +344,20 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
             if (placeName.Contains("Mare Lamentorum", StringComparison.OrdinalIgnoreCase))
                 this.moonTerritoryIds.Add(row.RowId);
+
+            if (row.TerritoryIntendedUse.RowId == (uint)ClientTerritoryIntendedUse.Town)
+            {
+                var cityState = placeName switch
+                {
+                    var name when name.Contains("Limsa Lominsa", StringComparison.OrdinalIgnoreCase) => "Limsa Lominsa",
+                    var name when name.Contains("Gridania", StringComparison.OrdinalIgnoreCase) => "Gridania",
+                    var name when name.Contains("Ul'dah", StringComparison.OrdinalIgnoreCase) => "Ul'dah",
+                    _ => null,
+                };
+
+                if (cityState != null)
+                    this.cityStateTerritoryNames[row.RowId] = cityState;
+            }
         }
 
         if (this.uldahTerritoryIds.Count == 0)
@@ -323,6 +366,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.log.Warning("Could not resolve The Waking Sands territory; pray-return-waking-sands tracking will be unavailable.");
         if (this.moonTerritoryIds.Count == 0)
             this.log.Warning("Could not resolve Mare Lamentorum; cheese-on-the-moon tracking will be unavailable.");
+        if (this.cityStateTerritoryNames.Count == 0)
+            this.log.Warning("Could not resolve any city-state territories; airship-city-state tracking will be unavailable.");
     }
 
     private void ResolveStartingAetherytes()
@@ -372,6 +417,9 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             {
                 this.oreItemIds.Add(row.RowId);
             }
+
+            if (name.Contains("Mini Cactpot", StringComparison.OrdinalIgnoreCase) && row.ItemAction.RowId != 0)
+                this.miniCactpotItemIds.Add(row.RowId);
         }
 
         if (this.mealItemIds.Count == 0)
@@ -380,22 +428,59 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.log.Warning("Could not resolve any usable cheese items; cheese-on-the-moon tracking will be unavailable.");
         if (this.oreItemIds.Count == 0)
             this.log.Warning("Could not resolve any ore items; gather-five-ores tracking will be unavailable.");
+        if (this.miniCactpotItemIds.Count == 0)
+            this.log.Warning("Could not resolve the Mini Cactpot ticket item; goldsaucer-mini-cactpot tracking will be unavailable.");
+    }
+
+    /// <summary>Scans the LogMessage sheet for the fall-damage combat log line instead of hardcoding a curated ID.</summary>
+    private void ResolveFallDamageLogMessages()
+    {
+        foreach (var row in this.dataManager.GetExcelSheet<LogMessage>(ClientLanguage.English))
+        {
+            var text = row.Text.ToString();
+            if (text.Contains("fall", StringComparison.OrdinalIgnoreCase) && text.Contains("damage", StringComparison.OrdinalIgnoreCase))
+                this.fallDamageLogMessageIds.Add(row.RowId);
+        }
+
+        if (this.fallDamageLogMessageIds.Count == 0)
+            this.log.Warning("Could not resolve the fall-damage log message; die-fall-damage tracking will be unavailable.");
     }
 
     private void OnTerritoryChanged(uint territoryId)
     {
         const string checkId = "pray-return-waking-sands";
-        if (this.IsLockedIn(checkId))
-            return;
+        if (!this.IsLockedIn(checkId))
+        {
+            if (this.uldahTerritoryIds.Contains(territoryId))
+            {
+                this.SetFlag(checkId, "left-uldah", true);
+            }
+            else if (territoryId == this.wakingSandsTerritoryId && this.GetValue(checkId, "left-uldah") != 0)
+            {
+                this.SetFlag(checkId, "arrived", true);
+            }
+        }
 
-        if (this.uldahTerritoryIds.Contains(territoryId))
+        this.CheckAirshipCityState(territoryId);
+    }
+
+    /// <summary>City-states aren't otherwise connected on foot, so a direct hop between two of them (without an
+    /// intervening teleport/return) can only have happened via airship.</summary>
+    private void CheckAirshipCityState(uint territoryId)
+    {
+        const string checkId = "airship-city-state";
+        var isCityState = this.cityStateTerritoryNames.TryGetValue(territoryId, out var cityStateName);
+        var teleported = this.suppressAirshipCheck;
+        this.suppressAirshipCheck = false;
+
+        if (!this.IsLockedIn(checkId) && isCityState && !teleported &&
+            this.lastCityStateName != null && this.lastCityStateName != cityStateName)
         {
-            this.SetFlag(checkId, "left-uldah", true);
+            this.SetFlag(checkId, "done", true);
         }
-        else if (territoryId == this.wakingSandsTerritoryId && this.GetValue(checkId, "left-uldah") != 0)
-        {
-            this.SetFlag(checkId, "arrived", true);
-        }
+
+        if (isCityState)
+            this.lastCityStateName = cityStateName;
     }
 
     private void OnDutyStarted(IDutyStateEventArgs _)
@@ -463,10 +548,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
     private void OnActionUsed(ActionType actionType, uint actionId)
     {
-        if (actionType == ActionType.Item && this.moonTerritoryIds.Contains(this.clientState.TerritoryType))
+        if (actionType == ActionType.Item)
         {
             var baseItemId = NormalizeItemActionId(actionId);
-            if (this.cheeseItemIds.Contains(baseItemId))
+            if (this.moonTerritoryIds.Contains(this.clientState.TerritoryType) && this.cheeseItemIds.Contains(baseItemId))
             {
                 var inventory = this.SnapshotPlayerInventory();
                 this.pendingCheeseUse = new PendingItemUse
@@ -475,16 +560,30 @@ public sealed unsafe class CheckProgressTracker : IDisposable
                     QuantityBefore = inventory.GetValueOrDefault(baseItemId),
                 };
             }
+
+            if (this.miniCactpotItemIds.Contains(baseItemId))
+            {
+                var inventory = this.SnapshotPlayerInventory();
+                this.pendingCactpotUse = new PendingItemUse
+                {
+                    ItemId = baseItemId,
+                    QuantityBefore = inventory.GetValueOrDefault(baseItemId),
+                };
+            }
         }
 
         const string prayCheckId = "pray-return-waking-sands";
-        if (!this.IsLockedIn(prayCheckId) &&
-            actionType == ActionType.GeneralAction &&
-            (actionId == this.sprintBlocker.TeleportGeneralActionId || actionId == this.sprintBlocker.ReturnGeneralActionId))
+        var isTeleportOrReturn = actionType == ActionType.GeneralAction &&
+            (actionId == this.sprintBlocker.TeleportGeneralActionId || actionId == this.sprintBlocker.ReturnGeneralActionId);
+
+        if (!this.IsLockedIn(prayCheckId) && isTeleportOrReturn)
         {
             this.ResetFlag(prayCheckId, "left-uldah");
             this.ResetFlag(prayCheckId, "arrived");
         }
+
+        if (isTeleportOrReturn)
+            this.suppressAirshipCheck = true;
 
         if (actionType == ActionType.GeneralAction && actionId == this.sprintBlocker.TeleportGeneralActionId)
         {
@@ -500,6 +599,44 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.SetFlag(mountCheckId, "mounted", true);
             this.SetFlag(mountCheckId, "indoors", true);
         }
+    }
+
+    /// <summary>Marks the fall-damage log line as pending; confirmed a few frames later once HP actually hits 0.</summary>
+    private void OnLogMessage(Dalamud.Game.Chat.ILogMessage message)
+    {
+        if (!this.IsLockedIn("die-fall-damage") && this.fallDamageLogMessageIds.Contains(message.LogMessageId))
+            this.fallDamageFramesRemaining = InventorySettleFrames;
+    }
+
+    private void OnVentureStartedAddon(AddonEvent type, AddonArgs args)
+        => this.SetFlag("retainer-venture-complete", "started", true);
+
+    private void OnVentureCompletedAddon(AddonEvent type, AddonArgs args)
+        => this.SetFlag("retainer-venture-complete", "completed", true);
+
+    /// <summary>The match addon has no explicit win/lose flag; tally board card ownership as it closes instead.</summary>
+    private unsafe void OnTripleTriadClosing(AddonEvent type, AddonArgs args)
+    {
+        const string checkId = "goldsaucer-triple-triad-win";
+        if (this.IsLockedIn(checkId) || args.Addon.IsNull)
+            return;
+
+        var addon = (AddonTripleTriad*)args.Addon.Address;
+        var blueCount = 0;
+        var redCount = 0;
+        foreach (var card in addon->Board)
+        {
+            if (!card.HasCard)
+                continue;
+
+            if (card.CardOwner == CardOwner.Blue)
+                blueCount++;
+            else if (card.CardOwner == CardOwner.Red)
+                redCount++;
+        }
+
+        if (blueCount > redCount)
+            this.SetFlag(checkId, "done", true);
     }
 
     private void OnAetheryteInteracted(uint aetheryteId)
@@ -523,6 +660,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckDungeonDeath();
         this.ProcessPendingInventoryActions();
         this.ProcessPendingCheeseUse();
+        this.ProcessPendingCactpotUse();
+        this.ProcessPendingFallDamage();
 
         this.tickCounter++;
         if (this.tickCounter % 30 != 0)
@@ -552,6 +691,39 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         if (--this.pendingCheeseUse.FramesRemaining <= 0)
             this.pendingCheeseUse = null;
+    }
+
+    private void ProcessPendingCactpotUse()
+    {
+        if (this.pendingCactpotUse == null)
+            return;
+
+        var inventory = this.SnapshotPlayerInventory();
+        if (inventory.GetValueOrDefault(this.pendingCactpotUse.ItemId) < this.pendingCactpotUse.QuantityBefore)
+        {
+            this.pendingCactpotUse = null;
+            this.SetFlag("goldsaucer-mini-cactpot", "done", true);
+            return;
+        }
+
+        if (--this.pendingCactpotUse.FramesRemaining <= 0)
+            this.pendingCactpotUse = null;
+    }
+
+    /// <summary>Confirms the death actually happened after the fall-damage log line fired.</summary>
+    private void ProcessPendingFallDamage()
+    {
+        if (this.fallDamageFramesRemaining <= 0)
+            return;
+
+        if (this.objectTable.LocalPlayer is ICharacter { CurrentHp: 0 })
+        {
+            this.fallDamageFramesRemaining = 0;
+            this.SetFlag("die-fall-damage", "done", true);
+            return;
+        }
+
+        this.fallDamageFramesRemaining--;
     }
 
     private static uint NormalizeItemActionId(uint actionId)
