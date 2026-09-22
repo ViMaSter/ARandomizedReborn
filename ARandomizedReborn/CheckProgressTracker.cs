@@ -42,9 +42,11 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private const string OreEvidencePrefix = "ore:";
     private const string ZoneEvidencePrefix = "zone:";
     private const string SocietyEvidencePrefix = "society:";
+    private const string MarketItemEvidencePrefix = "market-item:";
     private const uint MinerClassJobId = 16;
     private const uint BotanistClassJobId = 17;
     private const uint CulinarianClassJobId = 15;
+    private const uint FisherClassJobId = 18;
     private const int InventorySettleFrames = 15;
     private const int PendingLootFrames = 300;
     private const int HairstyleSettleFrames = 1800;
@@ -88,6 +90,20 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         public int FramesRemaining { get; set; } = InventorySettleFrames * 2;
     }
 
+    private sealed class PendingHeal
+    {
+        public required ulong TargetId { get; init; }
+        public required uint HpBefore { get; init; }
+        public int FramesRemaining { get; set; } = 300;
+    }
+
+    private sealed class PendingBossAoe
+    {
+        public required ulong SourceId { get; init; }
+        public required uint ActionId { get; init; }
+        public required uint HpBefore { get; init; }
+    }
+
     private static readonly GameInventoryType[] ArmoryCategories =
     [
         GameInventoryType.ArmoryMainHand,
@@ -129,6 +145,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly IChatGui chatGui;
     private readonly IAddonLifecycle addonLifecycle;
     private readonly IAgentLifecycle agentLifecycle;
+    private readonly IMarketBoard marketBoard;
+    private readonly IBuddyList buddyList;
     private readonly IPluginLog log;
 
     private readonly HashSet<uint> uldahTerritoryIds = [];
@@ -140,11 +158,20 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly HashSet<uint> oreItemIds = [];
     private readonly HashSet<uint> miniCactpotItemIds = [];
     private readonly HashSet<uint> fallDamageLogMessageIds = [];
+    private readonly HashSet<uint> guestbookMessageLogIds = [];
+    private readonly HashSet<uint> deepDungeonTrapLogIds = [];
+    private readonly HashSet<uint> highScoreLogIds = [];
+    private readonly HashSet<uint> marketSaleLogIds = [];
+    private readonly HashSet<uint> timeRestrictedFishItemIds = [];
+    private readonly HashSet<uint> areaActionIds = [];
     private readonly Dictionary<byte, (int OrderRowId, bool IsComplete)> markBillStates = [];
     private readonly Dictionary<ushort, (bool IsCompleted, uint SocietyId)> dailyQuestSnapshot = [];
     private uint wakingSandsTerritoryId;
 
     private bool enabled;
+    private bool fleeAttemptArmed;
+    private bool fleeAttemptUsedSprint;
+    private int fleeAttemptMaxEnemies;
     private bool dungeonRunArmed;
     private bool dungeonRunHadDeath;
     private bool suppressAirshipCheck;
@@ -153,6 +180,11 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private PendingInventoryAction? craftingAction;
     private PendingItemUse? pendingCheeseUse;
     private PendingItemUse? pendingCactpotUse;
+    private PendingHeal? pendingHeal;
+    private readonly Dictionary<(ulong SourceId, uint ActionId), PendingBossAoe> pendingBossAoes = [];
+    private DateTime lastDungeonBossAoeHitUtc;
+    private uint previousCompanionHp;
+    private readonly HashSet<ulong> chocoboRevengeTargets = [];
     private int fallDamageFramesRemaining;
     private readonly List<PendingInventoryAction> pendingGatheringActions = [];
     private readonly List<PendingInventoryAction> pendingCraftingActions = [];
@@ -165,6 +197,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private bool cutsceneReplayArmed;
     private bool cutsceneReplayStarted;
     private DateTime cutsceneReplayArmedUtc;
+    private bool trialIntroCutsceneStarted;
+    private DateTime trialIntroCutsceneStartedUtc;
     private GateAttempt? gateAttempt;
     private bool dailyQuestSnapshotInitialized;
     private nint deepDungeonDirectorAddress;
@@ -191,6 +225,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         IChatGui chatGui,
         IAddonLifecycle addonLifecycle,
         IAgentLifecycle agentLifecycle,
+        IMarketBoard marketBoard,
+        IBuddyList buddyList,
         IPluginLog log)
     {
         this.configuration = configuration;
@@ -210,12 +246,15 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.chatGui = chatGui;
         this.addonLifecycle = addonLifecycle;
         this.agentLifecycle = agentLifecycle;
+        this.marketBoard = marketBoard;
+        this.buddyList = buddyList;
         this.log = log;
 
         this.ResolveTerritories();
         this.ResolveStartingAetherytes();
         this.ResolveTrackedItems();
         this.ResolveFallDamageLogMessages();
+        this.ResolveSpecialLogMessages();
     }
 
     public void SetEnabled(bool value)
@@ -234,6 +273,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.sprintBlocker.ActionUsed += this.OnActionUsed;
             this.interactionRestrictionManager.AetheryteInteracted += this.OnAetheryteInteracted;
             this.chatGui.LogMessage += this.OnLogMessage;
+            this.marketBoard.ItemPurchased += this.OnMarketItemPurchased;
             this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskAsk", this.OnVentureStartedAddon);
             this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskResult", this.OnVentureCompletedAddon);
             this.addonLifecycle.RegisterListener(AddonEvent.PreFinalize, "TripleTriad", this.OnTripleTriadClosing);
@@ -253,6 +293,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.sprintBlocker.ActionUsed -= this.OnActionUsed;
             this.interactionRestrictionManager.AetheryteInteracted -= this.OnAetheryteInteracted;
             this.chatGui.LogMessage -= this.OnLogMessage;
+            this.marketBoard.ItemPurchased -= this.OnMarketItemPurchased;
             this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskAsk", this.OnVentureStartedAddon);
             this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskResult", this.OnVentureCompletedAddon);
             this.addonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "TripleTriad", this.OnTripleTriadClosing);
@@ -268,6 +309,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.craftingAction = null;
             this.pendingCheeseUse = null;
             this.pendingCactpotUse = null;
+            this.pendingHeal = null;
+            this.pendingBossAoes.Clear();
+            this.chocoboRevengeTargets.Clear();
+            this.previousCompanionHp = 0;
             this.fallDamageFramesRemaining = 0;
             this.markBillStates.Clear();
             this.dailyQuestSnapshot.Clear();
@@ -472,6 +517,12 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
     private void ResolveTrackedItems()
     {
+        foreach (var row in this.dataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>(ClientLanguage.English))
+        {
+            if (row.CastType > 1)
+                this.areaActionIds.Add(row.RowId);
+        }
+
         foreach (var row in this.dataManager.GetExcelSheet<Item>(ClientLanguage.English))
         {
             var name = row.Name.ToString();
@@ -493,6 +544,12 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
             if (name.Contains("Mini Cactpot", StringComparison.OrdinalIgnoreCase) && row.ItemAction.RowId != 0)
                 this.miniCactpotItemIds.Add(row.RowId);
+        }
+
+        foreach (var row in this.dataManager.GetExcelSheet<FishingNoteInfo>(ClientLanguage.English))
+        {
+            if (row.TimeRestriction != 0 && row.Item.RowId != 0)
+                this.timeRestrictedFishItemIds.Add(row.Item.RowId);
         }
 
         if (this.mealItemIds.Count == 0)
@@ -517,6 +574,49 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         if (this.fallDamageLogMessageIds.Count == 0)
             this.log.Warning("Could not resolve the fall-damage log message; die-fall-damage tracking will be unavailable.");
+    }
+
+    private void ResolveSpecialLogMessages()
+    {
+        foreach (var row in this.dataManager.GetExcelSheet<LogMessage>(ClientLanguage.English))
+        {
+            var text = row.Text.ToString();
+            if (text.Contains("guestbook", StringComparison.OrdinalIgnoreCase) &&
+                (text.Contains("message", StringComparison.OrdinalIgnoreCase) || text.Contains("entry", StringComparison.OrdinalIgnoreCase)))
+            {
+                this.guestbookMessageLogIds.Add(row.RowId);
+            }
+
+            if (text.Contains("trap", StringComparison.OrdinalIgnoreCase) &&
+                (text.Contains("trigger", StringComparison.OrdinalIgnoreCase) || text.Contains("activate", StringComparison.OrdinalIgnoreCase) ||
+                 text.Contains("spring", StringComparison.OrdinalIgnoreCase) || text.Contains("set off", StringComparison.OrdinalIgnoreCase)))
+            {
+                this.deepDungeonTrapLogIds.Add(row.RowId);
+            }
+
+            if (text.Contains("high score", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("new record", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("personal best", StringComparison.OrdinalIgnoreCase))
+            {
+                this.highScoreLogIds.Add(row.RowId);
+            }
+
+            if (text.Contains("sold", StringComparison.OrdinalIgnoreCase) &&
+                (text.Contains("market", StringComparison.OrdinalIgnoreCase) || text.Contains("retainer", StringComparison.OrdinalIgnoreCase) ||
+                 text.Contains("sale", StringComparison.OrdinalIgnoreCase)))
+            {
+                this.marketSaleLogIds.Add(row.RowId);
+            }
+        }
+
+        if (this.guestbookMessageLogIds.Count == 0)
+            this.log.Warning("Could not resolve a guestbook confirmation message; housing-guestbook-message tracking will be unavailable.");
+        if (this.deepDungeonTrapLogIds.Count == 0)
+            this.log.Warning("Could not resolve a deep-dungeon trap message; deepdungeon-step-trap tracking will be unavailable.");
+        if (this.highScoreLogIds.Count == 0)
+            this.log.Warning("Could not resolve a high-score message; inn-toy-chest-highscore tracking will be unavailable.");
+        if (this.marketSaleLogIds.Count == 0)
+            this.log.Warning("Could not resolve a market-sale message; retainer-market-flip resale tracking will be unavailable.");
     }
 
     private void OnTerritoryChanged(uint territoryId)
@@ -562,6 +662,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     {
         this.dungeonRunArmed = GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Dungeon;
         this.dungeonRunHadDeath = false;
+        this.trialIntroCutsceneStarted = false;
     }
 
     private void OnDutyWiped(IDutyStateEventArgs _)
@@ -573,10 +674,24 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.ClearLootTracking();
     }
 
-    private void OnDutyCompleted(IDutyStateEventArgs _)
+    private void OnDutyCompleted(IDutyStateEventArgs args)
     {
         if (this.dungeonRunArmed && !this.dungeonRunHadDeath)
             this.SetFlag("dungeon-no-deaths", "done", true);
+
+        if (this.dungeonRunArmed && DateTime.UtcNow - this.lastDungeonBossAoeHitUtc <= TimeSpan.FromMinutes(3))
+            this.SetFlag("dungeon-final-boss-aoe-hit", "done", true);
+
+        if (GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Trial &&
+            !this.playerState.IsLevelSynced &&
+            this.objectTable.LocalPlayer is ICharacter { MaxHp: > 0 } localPlayer &&
+            localPlayer.CurrentHp * 10 < localPlayer.MaxHp)
+        {
+            var otherPlayers = this.objectTable.Count(gameObject =>
+                gameObject.ObjectKind == ObjectKind.Pc && gameObject.EntityId != localPlayer.EntityId);
+            if (otherPlayers == 0)
+                this.SetFlag("trial-solo-unsynced-low-hp", "win", true);
+        }
 
         if (this.deepDungeonDirectorAddress != 0 && !this.deepDungeonFloorCounted)
         {
@@ -597,7 +712,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             if (value)
             {
                 var classJobId = this.playerState.ClassJob.RowId;
-                if (classJobId is MinerClassJobId or BotanistClassJobId)
+                if (classJobId is MinerClassJobId or BotanistClassJobId or FisherClassJobId)
                 {
                     this.gatheringAction = new PendingInventoryAction
                     {
@@ -632,6 +747,22 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         }
         else if (flag is ConditionFlag.WatchingCutscene or ConditionFlag.WatchingCutscene78)
         {
+            if (value && GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Trial &&
+                !this.trialIntroCutsceneStarted)
+            {
+                this.trialIntroCutsceneStarted = true;
+                this.trialIntroCutsceneStartedUtc = DateTime.UtcNow;
+            }
+            else if (!value && this.trialIntroCutsceneStarted &&
+                     !this.condition[ConditionFlag.WatchingCutscene] &&
+                     !this.condition[ConditionFlag.WatchingCutscene78])
+            {
+                if (DateTime.UtcNow - this.trialIntroCutsceneStartedUtc >= TimeSpan.FromSeconds(5))
+                    this.SetFlag("trial-solo-unsynced-low-hp", "cutscene", true);
+
+                this.trialIntroCutsceneStarted = false;
+            }
+
             if (value && this.cutsceneReplayArmed)
             {
                 this.cutsceneReplayStarted = true;
@@ -646,8 +777,19 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         }
     }
 
-    private void OnActionUsed(ActionType actionType, uint actionId)
+    private void OnActionUsed(ActionType actionType, uint actionId, ulong targetId)
     {
+        if (actionType == ActionType.GeneralAction && actionId == this.sprintBlocker.SprintGeneralActionId)
+            this.fleeAttemptUsedSprint = true;
+
+        if (actionType == ActionType.Action &&
+            this.objectTable.SearchById(targetId) is IBattleChara { ObjectKind: ObjectKind.Pc } target &&
+            target.EntityId != this.objectTable.LocalPlayer?.EntityId && target.CurrentHp > 0 && target.CurrentHp < target.MaxHp)
+        {
+            this.SetFlag("heal-hurt-player", "target", true);
+            this.pendingHeal = new PendingHeal { TargetId = targetId, HpBefore = target.CurrentHp };
+        }
+
         if (actionType == ActionType.Item)
         {
             var baseItemId = NormalizeItemActionId(actionId);
@@ -706,6 +848,69 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     {
         if (!this.IsLockedIn("die-fall-damage") && this.fallDamageLogMessageIds.Contains(message.LogMessageId))
             this.fallDamageFramesRemaining = InventorySettleFrames;
+
+        if (this.guestbookMessageLogIds.Contains(message.LogMessageId) &&
+            GameMain.Instance()->CurrentTerritoryIntendedUseId is ClientTerritoryIntendedUse.HousingIndoor or ClientTerritoryIntendedUse.HousingOutdoor)
+        {
+            this.SetFlag("housing-guestbook-message", "done", true);
+        }
+
+        if (this.deepDungeonTrapLogIds.Contains(message.LogMessageId) && this.condition[ConditionFlag.InDeepDungeon])
+            this.SetFlag("deepdungeon-step-trap", "done", true);
+
+        if (this.highScoreLogIds.Contains(message.LogMessageId) && this.IsInInn() && this.condition[ConditionFlag.PlayingMiniGame])
+            this.SetFlag("inn-toy-chest-highscore", "done", true);
+
+        if (this.marketSaleLogIds.Contains(message.LogMessageId) && this.MarketSaleMatchesPurchasedItem(message))
+            this.SetFlag("retainer-market-flip", "resold", true);
+    }
+
+    private void OnMarketItemPurchased(Dalamud.Game.Network.Structures.IMarketBoardPurchase purchase)
+    {
+        const string checkId = "retainer-market-flip";
+        if (this.IsLockedIn(checkId) || purchase.CatalogId == 0)
+            return;
+
+        var bucket = this.GetOrCreateBucket(checkId);
+        bucket[$"{MarketItemEvidencePrefix}{purchase.CatalogId}"] = 1;
+        bucket["bought"] = 1;
+        this.Evaluate(checkId);
+        this.configuration.Save();
+    }
+
+    private bool MarketSaleMatchesPurchasedItem(Dalamud.Game.Chat.ILogMessage message)
+    {
+        if (!this.configuration.CheckStepProgress.TryGetValue("retainer-market-flip", out var bucket))
+            return false;
+
+        var purchasedIds = bucket.Keys
+            .Where(key => key.StartsWith(MarketItemEvidencePrefix, StringComparison.Ordinal))
+            .Select(key => uint.TryParse(key.AsSpan(MarketItemEvidencePrefix.Length), out var itemId) ? itemId : 0)
+            .Where(itemId => itemId != 0)
+            .ToHashSet();
+        if (purchasedIds.Count == 0)
+            return false;
+
+        for (var index = 0; index < message.ParameterCount; index++)
+        {
+            if (message.TryGetIntParameter(index, out var value) && value > 0 && purchasedIds.Contains((uint)value))
+                return true;
+
+            if (!message.TryGetStringParameter(index, out var text))
+                continue;
+
+            var valueText = text.ToString();
+            foreach (var itemId in purchasedIds)
+            {
+                if (this.dataManager.GetExcelSheet<Item>(ClientLanguage.English).TryGetRow(itemId, out var item) &&
+                    valueText.Contains(item.Name.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private void OnVentureStartedAddon(AddonEvent type, AddonArgs args)
@@ -844,10 +1049,15 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
     private void OnFrameworkUpdate(IFramework _)
     {
+        this.CheckDungeonBossAoe();
+        this.CheckChocoboRevenge();
+        this.CheckFleeAttempt();
+        this.CheckDeepDungeonDeath();
         this.CheckDungeonDeath();
         this.ProcessPendingInventoryActions();
         this.ProcessPendingCheeseUse();
         this.ProcessPendingCactpotUse();
+        this.ProcessPendingHeal();
         this.ProcessPendingFallDamage();
         this.CaptureInnHairstyle();
         this.ProcessPendingHairstyleChange();
@@ -1216,6 +1426,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.ClearHairstyleTracking();
         this.ClearCutsceneReplayTracking();
         this.gateAttempt = null;
+        this.pendingBossAoes.Clear();
+        this.lastDungeonBossAoeHitUtc = default;
+        this.chocoboRevengeTargets.Clear();
+        this.previousCompanionHp = 0;
         this.lastInnHairstyle = null;
     }
 
@@ -1275,6 +1489,23 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.pendingCactpotUse = null;
     }
 
+    private void ProcessPendingHeal()
+    {
+        if (this.pendingHeal == null)
+            return;
+
+        if (this.objectTable.SearchById(this.pendingHeal.TargetId) is IBattleChara target &&
+            target.CurrentHp > this.pendingHeal.HpBefore)
+        {
+            this.pendingHeal = null;
+            this.SetFlag("heal-hurt-player", "heal", true);
+            return;
+        }
+
+        if (--this.pendingHeal.FramesRemaining <= 0)
+            this.pendingHeal = null;
+    }
+
     /// <summary>Confirms the death actually happened after the fall-damage log line fired.</summary>
     private void ProcessPendingFallDamage()
     {
@@ -1285,6 +1516,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         {
             this.fallDamageFramesRemaining = 0;
             this.SetFlag("die-fall-damage", "done", true);
+            if (GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Trial)
+                this.SetFlag("trial-fall-off-arena", "done", true);
             return;
         }
 
@@ -1315,6 +1548,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             else if (action.ClassJobId == BotanistClassJobId)
             {
                 this.AddDistinctEvidence("gather-three-zones", "zones", ZoneEvidencePrefix, action.TerritoryId);
+            }
+            else if (action.ClassJobId == FisherClassJobId && increases.Any(this.timeRestrictedFishItemIds.Contains))
+            {
+                this.SetFlag("gather-time-restricted-fish", "done", true);
             }
         }
 
@@ -1547,5 +1784,116 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         if (this.objectTable.LocalPlayer is ICharacter { CurrentHp: 0 })
             this.dungeonRunHadDeath = true;
+    }
+
+    private void CheckFleeAttempt()
+    {
+        var inCombat = this.condition[ConditionFlag.InCombat];
+        if (!inCombat)
+        {
+            if (this.fleeAttemptArmed && this.fleeAttemptMaxEnemies >= 5 && !this.fleeAttemptUsedSprint &&
+                this.objectTable.LocalPlayer is ICharacter { CurrentHp: > 0 })
+            {
+                this.SetFlag("flee-five-enemies-no-sprint", "done", true);
+            }
+
+            this.fleeAttemptArmed = false;
+            this.fleeAttemptUsedSprint = false;
+            this.fleeAttemptMaxEnemies = 0;
+            return;
+        }
+
+        this.fleeAttemptArmed = true;
+        if (this.objectTable.LocalPlayer is not ICharacter localPlayer)
+            return;
+
+        var enemies = this.objectTable.Count(gameObject =>
+            gameObject.ObjectKind == ObjectKind.BattleNpc &&
+            gameObject is IBattleChara { CurrentHp: > 0, TargetObjectId: var targetId } &&
+            (targetId == localPlayer.GameObjectId || targetId == localPlayer.EntityId) &&
+            Vector3.Distance(gameObject.Position, localPlayer.Position) <= 30f);
+        this.fleeAttemptMaxEnemies = Math.Max(this.fleeAttemptMaxEnemies, enemies);
+    }
+
+    private void CheckDeepDungeonDeath()
+    {
+        if (!this.condition[ConditionFlag.InDeepDungeon] ||
+            this.objectTable.LocalPlayer is not ICharacter { CurrentHp: 0 })
+        {
+            return;
+        }
+
+        var eventFramework = EventFramework.Instance();
+        var director = eventFramework == null ? null : eventFramework->GetInstanceContentDeepDungeon();
+        if (director != null && director->LayoutInitializationType == 6)
+            this.SetFlag("deepdungeon-die-to-boss", "done", true);
+    }
+
+    private void CheckDungeonBossAoe()
+    {
+        if (!this.dungeonRunArmed || this.objectTable.LocalPlayer is not ICharacter localPlayer)
+            return;
+
+        foreach (var gameObject in this.objectTable)
+        {
+            if (gameObject is not IBattleNpc { IsCasting: true, BattleNpcKind: BattleNpcSubKind.Combatant } enemy ||
+                !this.areaActionIds.Contains(enemy.CastActionId) ||
+                !this.dataManager.GetExcelSheet<BNpcBase>(ClientLanguage.English).TryGetRow(enemy.BaseId, out var npc) || npc.Rank <= 1)
+            {
+                continue;
+            }
+
+            var key = (enemy.EntityId, enemy.CastActionId);
+            this.pendingBossAoes.TryAdd(key, new PendingBossAoe
+            {
+                SourceId = enemy.EntityId,
+                ActionId = enemy.CastActionId,
+                HpBefore = localPlayer.CurrentHp,
+            });
+        }
+
+        foreach (var (key, pending) in this.pendingBossAoes.ToArray())
+        {
+            var sourceStillCasting = this.objectTable.SearchById(pending.SourceId) is IBattleChara source &&
+                                     source.IsCasting && source.CastActionId == pending.ActionId;
+            if (sourceStillCasting)
+                continue;
+
+            this.pendingBossAoes.Remove(key);
+            if (localPlayer.CurrentHp < pending.HpBefore)
+                this.lastDungeonBossAoeHitUtc = DateTime.UtcNow;
+        }
+    }
+
+    private void CheckChocoboRevenge()
+    {
+        var companion = this.buddyList.CompanionBuddy;
+        var currentHp = companion?.CurrentHP ?? 0;
+        if (this.previousCompanionHp > 0 && currentHp == 0 && this.objectTable.LocalPlayer is ICharacter localPlayer)
+        {
+            this.chocoboRevengeTargets.Clear();
+            foreach (var gameObject in this.objectTable)
+            {
+                if (gameObject is IBattleNpc { BattleNpcKind: BattleNpcSubKind.Combatant, CurrentHp: > 0 } enemy &&
+                    Vector3.Distance(enemy.Position, localPlayer.Position) <= 30f)
+                {
+                    this.chocoboRevengeTargets.Add(enemy.EntityId);
+                }
+            }
+        }
+
+        this.previousCompanionHp = currentHp;
+        if (this.chocoboRevengeTargets.Count == 0 || this.objectTable.LocalPlayer is not ICharacter { CurrentHp: > 0 })
+            return;
+
+        foreach (var targetId in this.chocoboRevengeTargets.ToArray())
+        {
+            if (this.objectTable.SearchById(targetId) is ICharacter { CurrentHp: 0 })
+            {
+                this.chocoboRevengeTargets.Clear();
+                this.SetFlag("chocobo-revenge", "done", true);
+                return;
+            }
+        }
     }
 }

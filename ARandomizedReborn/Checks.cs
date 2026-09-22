@@ -17,16 +17,9 @@ public sealed record CheckDefinition(
 
 public static class Checks
 {
-    /// <summary>A single step the player ticks off themselves once they've done the thing.</summary>
-    private static IReadOnlyList<CheckStepDefinition> Manual(string label)
-        => [new("done", label, ProgressStepKind.Flag)];
-
     /// <summary>A single step the plugin detects and flips on its own.</summary>
     private static IReadOnlyList<CheckStepDefinition> Auto(string label)
         => [new("done", label, ProgressStepKind.Flag, Automatic: true)];
-
-    private static IReadOnlyList<CheckStepDefinition> ManualCount(string id, string label, int target)
-        => [new(id, label, ProgressStepKind.Counter, target)];
 
     private static IReadOnlyList<CheckStepDefinition> AutoCount(string id, string label, int target)
         => [new(id, label, ProgressStepKind.Counter, target, Automatic: true)];
@@ -71,7 +64,7 @@ public static class Checks
             Auto("Cheer a player sharing your job")),
         new("flee-five-enemies-no-sprint", "Flee without Sprint",
             "Escape combat with five enemies on you without using Sprint.", null,
-            Manual("Escape combat with 5 enemies without Sprint")),
+            Auto("Escape combat with 5 enemies without Sprint")),
         new("fate-with-player-nearby", "Team FATE",
             "Complete a FATE with at least one other player nearby.", null,
             Auto("Complete a FATE with another player nearby")),
@@ -85,7 +78,7 @@ public static class Checks
             "Heal an injured player in the open world.", null,
             Steps(
                 new("target", "Target an injured player", ProgressStepKind.Flag, Automatic: true),
-                new("heal", "Heal them", ProgressStepKind.Flag))),
+                new("heal", "Heal them", ProgressStepKind.Flag, Automatic: true))),
         new("wave-gatherer", "Wave to a gatherer",
             "Find a gatherer in the open world and wave at them.", null,
             Auto("Wave to a gatherer")),
@@ -96,7 +89,7 @@ public static class Checks
             Auto("Sit in a chair in someone's house")),
         new("housing-guestbook-message", "Write a nice guestbook message",
             "Leave a friendly message in a house guestbook.", UnlockKey.Housing,
-            Manual("Write a nice guestbook message")),
+            Auto("Write a nice guestbook message")),
 
         // Allied societies.
         new("society-three-dailies", "Allied society regular",
@@ -106,13 +99,13 @@ public static class Checks
         // Deep dungeon.
         new("deepdungeon-step-trap", "Step on a trap",
             "Trigger any trap inside a deep dungeon.", UnlockKey.DeepDungeon,
-            Manual("Step on a trap")),
+            Auto("Step on a trap")),
         new("deepdungeon-clear-ten-floors", "Clear 10 floors",
             "Clear ten deep dungeon floors.", UnlockKey.DeepDungeon,
             AutoCount("floors", "Floors cleared", 10)),
         new("deepdungeon-die-to-boss", "Die to a deep dungeon boss",
             "Die to a boss fight before reaching the checkpoint.", UnlockKey.DeepDungeon,
-            Manual("Die to a boss before the checkpoint")),
+            Auto("Die to a boss before the checkpoint")),
 
         // Inn rooms.
         new("inn-unending-journey-cutscene", "The Unending Journey",
@@ -123,7 +116,7 @@ public static class Checks
             Auto("Change your hairstyle")),
         new("inn-toy-chest-highscore", "Toy chest highscore",
             "Get a highscore in any toy chest minigame.", UnlockKey.InnRooms,
-            Manual("Get a toy chest highscore")),
+            Auto("Get a toy chest highscore")),
 
         // Gold Saucer.
         new("goldsaucer-mini-cactpot", "Play the Mini Cactpot",
@@ -139,7 +132,7 @@ public static class Checks
         // Gatherers.
         new("gather-time-restricted-fish", "Catch a timed fish",
             "Fish up a fish that only occurs during a specific time of day.", UnlockKey.Gatherers,
-            Manual("Catch a time-restricted fish")),
+            Auto("Catch a time-restricted fish")),
         new("gather-five-ores", "Gather five kinds of ore",
             "Mine five different kinds of ore.", UnlockKey.Gatherers,
             AutoCount("ores", "Different kinds of ore gathered", 5)),
@@ -161,11 +154,11 @@ public static class Checks
         new("trial-solo-unsynced-low-hp", "Down to the wire",
             "Watch the full intro cutscene, then solo an unsynced trial and win with less than 10% HP.", UnlockKey.Trials,
             Steps(
-                new("cutscene", "Watch the full intro cutscene", ProgressStepKind.Flag),
-                new("win", "Win solo, unsynced, under 10% HP", ProgressStepKind.Flag))),
+                new("cutscene", "Watch the full intro cutscene", ProgressStepKind.Flag, Automatic: true),
+                new("win", "Win solo, unsynced, under 10% HP", ProgressStepKind.Flag, Automatic: true))),
         new("trial-fall-off-arena", "Fall off an arena",
             "Take the scenic route off a trial arena.", UnlockKey.Trials,
-            Manual("Fall off a trial arena")),
+            Auto("Fall off a trial arena")),
 
         // Dungeons.
         new("dungeon-greed-win", "Greed and win",
@@ -176,14 +169,14 @@ public static class Checks
             Auto("Finish a dungeon with no deaths")),
         new("dungeon-final-boss-aoe-hit", "Eat the telegraph",
             "Get hit by a dungeon final boss' AOE attack.", UnlockKey.Dungeons,
-            Manual("Get hit by a dungeon final boss' AOE")),
+            Auto("Get hit by a dungeon final boss' AOE")),
 
         // Retainers.
         new("retainer-market-flip", "Market board flip",
             "Buy something from the market board and successfully resell it, even at a loss.", UnlockKey.Retainers,
             Steps(
-                new("bought", "Buy an item from the market board", ProgressStepKind.Flag),
-                new("resold", "Resell it", ProgressStepKind.Flag))),
+                new("bought", "Buy an item from the market board", ProgressStepKind.Flag, Automatic: true),
+                new("resold", "Resell it", ProgressStepKind.Flag, Automatic: true))),
         new("retainer-venture-complete", "Complete a venture",
             "Start a new venture and wait for it to complete.", UnlockKey.Retainers,
             Steps(
@@ -199,7 +192,7 @@ public static class Checks
         // Mounts / chocobo.
         new("chocobo-revenge", "Chocobo revenge",
             "Have your chocobo companion die and take revenge on the enemies.", UnlockKey.Mounts,
-            Manual("Have your chocobo die and take revenge")),
+            Auto("Have your chocobo die and take revenge")),
         new("mount-indoors", "Ride a mount indoors",
             "Mount up indoors somewhere that allows it.", UnlockKey.Mounts,
             Steps(

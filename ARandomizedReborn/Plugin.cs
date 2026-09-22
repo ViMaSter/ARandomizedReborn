@@ -38,6 +38,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] internal static IAgentLifecycle AgentLifecycle { get; private set; } = null!;
     [PluginService] internal static Dalamud.Plugin.Services.IGameInventory GameInventory { get; private set; } = null!;
+    [PluginService] internal static IMarketBoard MarketBoard { get; private set; } = null!;
+    [PluginService] internal static IBuddyList BuddyList { get; private set; } = null!;
 
     private const string CommandName = "/randomizer";
 
@@ -86,7 +88,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         CheckProgressTracker = new CheckProgressTracker(
             Configuration, ReportCheck, Framework, ClientState, Condition, DutyState, PlayerState, TargetManager, ObjectTable, GameInventory,
-            FateTable, DataManager, SprintBlocker, InteractionRestrictionManager, ChatGui, AddonLifecycle, AgentLifecycle, Log);
+            FateTable, DataManager, SprintBlocker, InteractionRestrictionManager, ChatGui, AddonLifecycle, AgentLifecycle, MarketBoard, BuddyList, Log);
         CheckProgressTracker.SetEnabled(Configuration.EnableRandomizer);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
