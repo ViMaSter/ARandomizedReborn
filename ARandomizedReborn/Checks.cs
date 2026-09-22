@@ -59,7 +59,7 @@ public static class Checks
             AutoCount("matching", "Equipped pieces sharing one dye", 2)),
         new("fill-armory-category", "Fill an armory chest category",
             "Fill up every slot in one armory chest category.", null,
-            Manual("Fill every slot in one armory chest category")),
+            Auto("Fill every slot in one armory chest category")),
         new("sit-bench-city-state", "Sit on a bench in any city-state",
             "Use a bench (not /sit on the ground) inside a city-state.", null,
             Manual("Sit on a bench in a city-state")),
@@ -77,7 +77,10 @@ public static class Checks
             Manual("Complete a FATE with another player nearby")),
         new("three-starting-aetherytes", "Tour the aetherytes",
             "Interact with all three starting city-state aetherytes without teleporting.", null,
-            ManualCount("aetherytes", "Starting aetherytes interacted with", 3)),
+            Steps(
+                new("limsa", "Interact with Limsa Lominsa's aetheryte", ProgressStepKind.Flag, Automatic: true),
+                new("gridania", "Interact with Gridania's aetheryte", ProgressStepKind.Flag, Automatic: true),
+                new("uldah", "Interact with Ul'dah's aetheryte", ProgressStepKind.Flag, Automatic: true))),
         new("heal-hurt-player", "Heal a hurt player",
             "Heal an injured player in the open world.", null,
             Steps(
@@ -85,7 +88,7 @@ public static class Checks
                 new("heal", "Heal them", ProgressStepKind.Flag))),
         new("wave-gatherer", "Wave to a gatherer",
             "Find a gatherer in the open world and wave at them.", null,
-            Manual("Wave to a gatherer")),
+            Auto("Wave to a gatherer")),
 
         // Housing.
         new("housing-sit-chair", "Sit in a chair in someone's house",
@@ -170,7 +173,7 @@ public static class Checks
             Manual("Greed roll and win a dungeon item")),
         new("dungeon-no-deaths", "Flawless run",
             "Finish a dungeon with no deaths.", UnlockKey.Dungeons,
-            Manual("Finish a dungeon with no deaths")),
+            Auto("Finish a dungeon with no deaths")),
         new("dungeon-final-boss-aoe-hit", "Eat the telegraph",
             "Get hit by a dungeon final boss' AOE attack.", UnlockKey.Dungeons,
             Manual("Get hit by a dungeon final boss' AOE")),
@@ -188,7 +191,7 @@ public static class Checks
                 new("completed", "Wait for it to complete", ProgressStepKind.Flag))),
         new("retainer-empty-inventory", "Empty your inventory",
             "Move everything out of your inventory.", UnlockKey.Retainers,
-            Manual("Empty your inventory")),
+            Auto("Empty your inventory")),
         new("retainer-fill-sale-slots", "Fill all sale slots",
             "Fill up all 20 of one retainer's sale slots.", UnlockKey.Retainers,
             ManualCount("slots", "Retainer sale slots filled", 20)),

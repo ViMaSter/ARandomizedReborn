@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dalamud.Game;
+using Dalamud.Game.DutyState;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
@@ -24,21 +25,50 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 {
     private const string TargetSuffix = ":target";
 
+    private static readonly GameInventoryType[] ArmoryCategories =
+    [
+        GameInventoryType.ArmoryMainHand,
+        GameInventoryType.ArmoryOffHand,
+        GameInventoryType.ArmoryHead,
+        GameInventoryType.ArmoryBody,
+        GameInventoryType.ArmoryHands,
+        GameInventoryType.ArmoryLegs,
+        GameInventoryType.ArmoryFeets,
+        GameInventoryType.ArmoryEar,
+        GameInventoryType.ArmoryNeck,
+        GameInventoryType.ArmoryWrist,
+        GameInventoryType.ArmoryRings,
+        GameInventoryType.ArmorySoulCrystal,
+    ];
+
+    private static readonly GameInventoryType[] PlayerInventoryPages =
+    [
+        GameInventoryType.Inventory1,
+        GameInventoryType.Inventory2,
+        GameInventoryType.Inventory3,
+        GameInventoryType.Inventory4,
+    ];
+
     private readonly Configuration configuration;
     private readonly Func<string, bool> reportCheck;
     private readonly IFramework framework;
     private readonly IClientState clientState;
+    private readonly IDutyState dutyState;
     private readonly ITargetManager targetManager;
     private readonly IObjectTable objectTable;
     private readonly IGameInventory gameInventory;
     private readonly IDataManager dataManager;
     private readonly SprintBlocker sprintBlocker;
+    private readonly InteractionRestrictionManager interactionRestrictionManager;
     private readonly IPluginLog log;
 
     private readonly HashSet<uint> uldahTerritoryIds = [];
+    private readonly Dictionary<uint, string> startingAetheryteSteps = [];
     private uint wakingSandsTerritoryId;
 
     private bool enabled;
+    private bool dungeonRunArmed;
+    private bool dungeonRunHadDeath;
     private int tickCounter;
 
     public CheckProgressTracker(
@@ -46,25 +76,30 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         Func<string, bool> reportCheck,
         IFramework framework,
         IClientState clientState,
+        IDutyState dutyState,
         ITargetManager targetManager,
         IObjectTable objectTable,
         IGameInventory gameInventory,
         IDataManager dataManager,
         SprintBlocker sprintBlocker,
+        InteractionRestrictionManager interactionRestrictionManager,
         IPluginLog log)
     {
         this.configuration = configuration;
         this.reportCheck = reportCheck;
         this.framework = framework;
         this.clientState = clientState;
+        this.dutyState = dutyState;
         this.targetManager = targetManager;
         this.objectTable = objectTable;
         this.gameInventory = gameInventory;
         this.dataManager = dataManager;
         this.sprintBlocker = sprintBlocker;
+        this.interactionRestrictionManager = interactionRestrictionManager;
         this.log = log;
 
         this.ResolveTerritories();
+        this.ResolveStartingAetherytes();
     }
 
     public void SetEnabled(bool value)
@@ -76,14 +111,24 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         if (value)
         {
             this.clientState.TerritoryChanged += this.OnTerritoryChanged;
+            this.dutyState.DutyStarted += this.OnDutyStarted;
+            this.dutyState.DutyWiped += this.OnDutyWiped;
+            this.dutyState.DutyCompleted += this.OnDutyCompleted;
             this.sprintBlocker.ActionUsed += this.OnActionUsed;
+            this.interactionRestrictionManager.AetheryteInteracted += this.OnAetheryteInteracted;
             this.framework.Update += this.OnFrameworkUpdate;
         }
         else
         {
             this.clientState.TerritoryChanged -= this.OnTerritoryChanged;
+            this.dutyState.DutyStarted -= this.OnDutyStarted;
+            this.dutyState.DutyWiped -= this.OnDutyWiped;
+            this.dutyState.DutyCompleted -= this.OnDutyCompleted;
             this.sprintBlocker.ActionUsed -= this.OnActionUsed;
+            this.interactionRestrictionManager.AetheryteInteracted -= this.OnAetheryteInteracted;
             this.framework.Update -= this.OnFrameworkUpdate;
+            this.dungeonRunArmed = false;
+            this.dungeonRunHadDeath = false;
         }
     }
 
@@ -230,6 +275,33 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.log.Warning("Could not resolve The Waking Sands territory; pray-return-waking-sands tracking will be unavailable.");
     }
 
+    private void ResolveStartingAetherytes()
+    {
+        foreach (var row in this.dataManager.GetExcelSheet<Aetheryte>(ClientLanguage.English))
+        {
+            if (!row.IsAetheryte)
+                continue;
+
+            var placeName = row.PlaceName.ValueNullable?.Name.ToString() ?? string.Empty;
+            var stepId = placeName switch
+            {
+                var name when name.Contains("Limsa Lominsa", StringComparison.OrdinalIgnoreCase) => "limsa",
+                var name when name.Contains("Gridania", StringComparison.OrdinalIgnoreCase) => "gridania",
+                var name when name.Contains("Ul'dah", StringComparison.OrdinalIgnoreCase) => "uldah",
+                _ => null,
+            };
+
+            if (stepId != null && !this.startingAetheryteSteps.ContainsValue(stepId))
+                this.startingAetheryteSteps[row.RowId] = stepId;
+        }
+
+        foreach (var stepId in new[] { "limsa", "gridania", "uldah" })
+        {
+            if (!this.startingAetheryteSteps.ContainsValue(stepId))
+                this.log.Warning($"Could not resolve the {stepId} starting aetheryte; three-starting-aetherytes tracking will be unavailable for that city.");
+        }
+    }
+
     private void OnTerritoryChanged(uint territoryId)
     {
         const string checkId = "pray-return-waking-sands";
@@ -246,6 +318,27 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         }
     }
 
+    private void OnDutyStarted(IDutyStateEventArgs _)
+    {
+        this.dungeonRunArmed = GameMain.Instance()->CurrentTerritoryIntendedUseId == ClientTerritoryIntendedUse.Dungeon;
+        this.dungeonRunHadDeath = false;
+    }
+
+    private void OnDutyWiped(IDutyStateEventArgs _)
+    {
+        if (this.dungeonRunArmed)
+            this.dungeonRunHadDeath = true;
+    }
+
+    private void OnDutyCompleted(IDutyStateEventArgs _)
+    {
+        if (this.dungeonRunArmed && !this.dungeonRunHadDeath)
+            this.SetFlag("dungeon-no-deaths", "done", true);
+
+        this.dungeonRunArmed = false;
+        this.dungeonRunHadDeath = false;
+    }
+
     private void OnActionUsed(ActionType actionType, uint actionId)
     {
         const string prayCheckId = "pray-return-waking-sands";
@@ -257,12 +350,29 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.ResetFlag(prayCheckId, "arrived");
         }
 
+        if (actionType == ActionType.GeneralAction && actionId == this.sprintBlocker.TeleportGeneralActionId)
+        {
+            const string aetheryteCheckId = "three-starting-aetherytes";
+            this.ResetFlag(aetheryteCheckId, "limsa");
+            this.ResetFlag(aetheryteCheckId, "gridania");
+            this.ResetFlag(aetheryteCheckId, "uldah");
+        }
+
         const string mountCheckId = "mount-indoors";
         if (!this.IsLockedIn(mountCheckId) && actionType == ActionType.Mount && this.IsIndoors())
         {
             this.SetFlag(mountCheckId, "mounted", true);
             this.SetFlag(mountCheckId, "indoors", true);
         }
+    }
+
+    private void OnAetheryteInteracted(uint aetheryteId)
+    {
+        const string checkId = "three-starting-aetherytes";
+        if (this.IsLockedIn(checkId) || !this.startingAetheryteSteps.TryGetValue(aetheryteId, out var stepId))
+            return;
+
+        this.SetFlag(checkId, stepId, true);
     }
 
     private bool IsIndoors()
@@ -274,6 +384,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
     private void OnFrameworkUpdate(IFramework _)
     {
+        this.CheckDungeonDeath();
+
         this.tickCounter++;
         if (this.tickCounter % 30 != 0)
             return;
@@ -282,6 +394,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckStackOverflow();
         this.CheckHealTarget();
         this.CheckWellFed();
+        this.CheckFullArmoryCategory();
+        this.CheckEmptyInventory();
     }
 
     private void CheckGearDye()
@@ -375,5 +489,66 @@ public sealed unsafe class CheckProgressTracker : IDisposable
                 return;
             }
         }
+    }
+
+    private void CheckFullArmoryCategory()
+    {
+        const string checkId = "fill-armory-category";
+        if (this.IsLockedIn(checkId))
+            return;
+
+        foreach (var category in ArmoryCategories)
+        {
+            var items = this.gameInventory.GetInventoryItems(category);
+            if (items.Length == 0)
+                continue;
+
+            var full = true;
+            foreach (var item in items)
+            {
+                if (!item.IsEmpty && item.ItemId != 0)
+                    continue;
+
+                full = false;
+                break;
+            }
+
+            if (!full)
+                continue;
+
+            this.SetFlag(checkId, "done", true);
+            return;
+        }
+    }
+
+    private void CheckEmptyInventory()
+    {
+        const string checkId = "retainer-empty-inventory";
+        if (this.IsLockedIn(checkId) || this.objectTable.LocalPlayer == null)
+            return;
+
+        foreach (var page in PlayerInventoryPages)
+        {
+            var items = this.gameInventory.GetInventoryItems(page);
+            if (items.Length == 0)
+                return;
+
+            foreach (var item in items)
+            {
+                if (!item.IsEmpty && item.ItemId != 0)
+                    return;
+            }
+        }
+
+        this.SetFlag(checkId, "done", true);
+    }
+
+    private void CheckDungeonDeath()
+    {
+        if (!this.dungeonRunArmed || this.dungeonRunHadDeath)
+            return;
+
+        if (this.objectTable.LocalPlayer is ICharacter { CurrentHp: 0 })
+            this.dungeonRunHadDeath = true;
     }
 }

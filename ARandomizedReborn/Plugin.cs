@@ -21,6 +21,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
+    [PluginService] internal static IDutyState DutyState { get; private set; } = null!;
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
@@ -78,15 +79,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         BingoSession = new BingoSession(Configuration, ApplyUnlockState, Notify);
 
+        InteractionRestrictionManager = new InteractionRestrictionManager(GameInteropProvider, ToastGui, Configuration);
+        InteractionRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
+
         CheckProgressTracker = new CheckProgressTracker(
-            Configuration, ReportCheck, Framework, ClientState, TargetManager, ObjectTable, GameInventory, DataManager, SprintBlocker, Log);
+            Configuration, ReportCheck, Framework, ClientState, DutyState, TargetManager, ObjectTable, GameInventory, DataManager, SprintBlocker,
+            InteractionRestrictionManager, Log);
         CheckProgressTracker.SetEnabled(Configuration.EnableRandomizer);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
-
-        InteractionRestrictionManager = new InteractionRestrictionManager(GameInteropProvider, ToastGui, Configuration);
-        InteractionRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
 
         UiRestrictionManager = new UiRestrictionManager(AddonLifecycle, DataManager, Configuration);
         UiRestrictionManager.SetEnabled(Configuration.EnableRandomizer);

@@ -16,6 +16,8 @@ public sealed unsafe class InteractionRestrictionManager : IDisposable
     private readonly Configuration configuration;
     private Hook<TargetSystem.Delegates.InteractWithObject>? interactionHook;
 
+    public event Action<uint>? AetheryteInteracted;
+
     public InteractionRestrictionManager(
         IGameInteropProvider gameInteropProvider,
         IToastGui toastGui,
@@ -70,7 +72,14 @@ public sealed unsafe class InteractionRestrictionManager : IDisposable
             return 0;
         }
 
-        return this.interactionHook!.Original(targetSystem, gameObject, checkLineOfSight);
+        var aetheryteId = gameObject != null && gameObject->ObjectKind == ObjectKind.Aetheryte
+            ? gameObject->BaseId
+            : 0;
+        var result = this.interactionHook!.Original(targetSystem, gameObject, checkLineOfSight);
+        if (aetheryteId != 0)
+            this.AetheryteInteracted?.Invoke(aetheryteId);
+
+        return result;
     }
 
     private bool IsBlocked(GameObject* gameObject, out string lockName)

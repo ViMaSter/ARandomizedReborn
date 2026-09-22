@@ -5,9 +5,11 @@ using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using Lumina.Excel.Sheets;
+using ClientTerritoryIntendedUse = FFXIVClientStructs.FFXIV.Client.Enums.TerritoryIntendedUse;
 
 namespace ARandomizedReborn;
 
@@ -17,6 +19,7 @@ public sealed unsafe class ObjectiveTracker : IDisposable
     private const string PointAtBlueAlisaieId = "point-blue-alisaie";
     private const string PetGrahaTiaId = "pet-graha-tia";
     private const string CheerSameJobId = "cheer-same-job-player";
+    private const string WaveGathererId = "wave-gatherer";
 
     private readonly IGameInteropProvider gameInteropProvider;
     private readonly ITargetManager targetManager;
@@ -87,6 +90,7 @@ public sealed unsafe class ObjectiveTracker : IDisposable
         this.TryTargetedEmote(emoteId, "Point", IsBlueAlisaie, PointAtBlueAlisaieId);
         this.TryTargetedEmote(emoteId, "Pet", IsGrahaTia, PetGrahaTiaId);
         this.TryCheerSameJob(emoteId);
+        this.TryWaveGatherer(emoteId);
         this.emoteHook!.Original(agent, emoteId, playEmoteOption, addToHistory, liveUpdateHistory);
     }
 
@@ -117,6 +121,25 @@ public sealed unsafe class ObjectiveTracker : IDisposable
 
         if (target.ClassJob.RowId == localPlayer.ClassJob.RowId)
             this.progressTracker.SetFlag(CheerSameJobId, "done", true);
+    }
+
+    private void TryWaveGatherer(ushort emoteId)
+    {
+        var emoteName = this.emoteNames.TryGetValue(emoteId, out var name) ? name : string.Empty;
+        if (!string.Equals(emoteName, "Wave", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        if (GameMain.Instance()->CurrentTerritoryIntendedUseId != ClientTerritoryIntendedUse.Overworld)
+            return;
+
+        if (this.targetManager.Target is not ICharacter { ObjectKind: ObjectKind.Pc } target)
+            return;
+
+        if (this.objectTable.LocalPlayer is not ICharacter localPlayer || target.Address == localPlayer.Address)
+            return;
+
+        if (target.ClassJob.RowId is >= 16 and <= 18)
+            this.progressTracker.SetFlag(WaveGathererId, "done", true);
     }
 
     private static bool IsBlueAlisaie(string targetName)
