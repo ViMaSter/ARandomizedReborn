@@ -144,9 +144,8 @@ public sealed unsafe class InteractionRestrictionManager : IDisposable
         }
 
         if (!this.configuration.UnlockRetainers &&
-            (objectKind == ObjectKind.Retainer ||
-             (objectKind is ObjectKind.EventObj or ObjectKind.HousingEventObject &&
-              gameObject->GetName().ToString().Equals("Summoning Bell", StringComparison.OrdinalIgnoreCase))))
+            objectKind is ObjectKind.EventObj or ObjectKind.HousingEventObject &&
+            gameObject->GetName().ToString().Equals("Summoning Bell", StringComparison.OrdinalIgnoreCase))
         {
             lockName = "retainer access";
             return true;

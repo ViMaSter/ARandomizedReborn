@@ -26,17 +26,6 @@ public sealed class UiRestrictionManager : IDisposable
         "AreaMap",
     ];
 
-    private static readonly string[] RetainerAddonNames =
-    [
-        "RetainerList",
-        "RetainerItemTransferList",
-        "RetainerItemTransferProgress",
-        "RetainerSell",
-        "RetainerTaskAsk",
-        "RetainerTaskList",
-        "RetainerTaskResult",
-    ];
-
     private static readonly string[] AlliedSocietyAddonNames =
     [
         "SatisfactionSupply",
@@ -99,8 +88,6 @@ public sealed class UiRestrictionManager : IDisposable
         this.addonLifecycle.RegisterListener(AddonEvent.PostUpdate, EnemyCastAddonNames, this.OnEnemyAddon);
         this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, MapAddonNames, this.OnMapAddon);
         this.addonLifecycle.RegisterListener(AddonEvent.PostUpdate, MapAddonNames, this.OnMapAddon);
-        this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, RetainerAddonNames, this.OnRetainerAddon);
-        this.addonLifecycle.RegisterListener(AddonEvent.PostUpdate, RetainerAddonNames, this.OnRetainerAddon);
         this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, AlliedSocietyAddonNames, this.OnAlliedSocietyAddon);
         this.addonLifecycle.RegisterListener(AddonEvent.PostUpdate, AlliedSocietyAddonNames, this.OnAlliedSocietyAddon);
         this.addonLifecycle.RegisterListener(AddonEvent.PostSetup, DeepDungeonAddonNames, this.OnDeepDungeonAddon);
@@ -115,8 +102,6 @@ public sealed class UiRestrictionManager : IDisposable
         this.addonLifecycle.UnregisterListener(AddonEvent.PostUpdate, EnemyCastAddonNames, this.OnEnemyAddon);
         this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, MapAddonNames, this.OnMapAddon);
         this.addonLifecycle.UnregisterListener(AddonEvent.PostUpdate, MapAddonNames, this.OnMapAddon);
-        this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, RetainerAddonNames, this.OnRetainerAddon);
-        this.addonLifecycle.UnregisterListener(AddonEvent.PostUpdate, RetainerAddonNames, this.OnRetainerAddon);
         this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, AlliedSocietyAddonNames, this.OnAlliedSocietyAddon);
         this.addonLifecycle.UnregisterListener(AddonEvent.PostUpdate, AlliedSocietyAddonNames, this.OnAlliedSocietyAddon);
         this.addonLifecycle.UnregisterListener(AddonEvent.PostSetup, DeepDungeonAddonNames, this.OnDeepDungeonAddon);
@@ -134,12 +119,6 @@ public sealed class UiRestrictionManager : IDisposable
     private unsafe void OnMapAddon(AddonEvent type, AddonArgs args)
     {
         if (!this.configuration.UnlockMaps && !args.Addon.IsNull)
-            ((AtkUnitBase*)args.Addon.Address)->IsVisible = false;
-    }
-
-    private unsafe void OnRetainerAddon(AddonEvent type, AddonArgs args)
-    {
-        if (!this.configuration.UnlockRetainers && !args.Addon.IsNull)
             ((AtkUnitBase*)args.Addon.Address)->IsVisible = false;
     }
 

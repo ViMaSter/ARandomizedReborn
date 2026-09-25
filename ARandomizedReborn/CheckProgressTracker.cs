@@ -198,6 +198,11 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private uint previousCompanionHp;
     private readonly HashSet<ulong> chocoboRevengeTargets = [];
     private int fallDamageFramesRemaining;
+    private uint? previousPlayerHp;
+    private ulong previousPlayerEntityId;
+    private Vector3 previousPlayerPosition;
+    private bool previousPlayerJumping;
+    private readonly Queue<(DateTime Time, float Height, bool Jumping)> recentPlayerMovement = new();
     private readonly List<PendingInventoryAction> pendingGatheringActions = [];
     private readonly List<PendingInventoryAction> pendingCraftingActions = [];
     private readonly Dictionary<ushort, FateAttempt> fateAttempts = [];
@@ -341,6 +346,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.chocoboRevengeTargets.Clear();
             this.previousCompanionHp = 0;
             this.fallDamageFramesRemaining = 0;
+            this.previousPlayerHp = null;
+            this.recentPlayerMovement.Clear();
             this.markBillStates.Clear();
             this.dailyQuestSnapshot.Clear();
             this.dailyQuestSnapshotInitialized = false;
@@ -667,7 +674,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         }
 
         if (this.fallDamageLogMessageIds.Count == 0)
-            this.log.Warning("Could not resolve the fall-damage log message; die-fall-damage tracking will be unavailable.");
+            this.log.Warning("Could not resolve the fall-damage log message; using movement-based fall detection.");
     }
 
     private void ResolveSpecialLogMessages()
@@ -959,7 +966,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private void OnLogMessage(Dalamud.Game.Chat.ILogMessage message)
     {
         if (!this.IsLockedIn("die-fall-damage") && this.fallDamageLogMessageIds.Contains(message.LogMessageId))
+        {
+            this.log.Information($"[CheckProgressTracker] Fall-damage log signal: id={message.LogMessageId}");
             this.fallDamageFramesRemaining = InventorySettleFrames;
+        }
 
         if (this.guestbookMessageLogIds.Contains(message.LogMessageId) &&
             GameMain.Instance()->CurrentTerritoryIntendedUseId is ClientTerritoryIntendedUse.HousingIndoor or ClientTerritoryIntendedUse.HousingOutdoor)
@@ -1186,6 +1196,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckMiniCactpot();
         this.ProcessPendingHeal();
         this.ProcessPendingFoodEat();
+        this.LogPlayerHpChanges();
         this.ProcessPendingFallDamage();
         this.CaptureInnHairstyle();
         this.ProcessPendingHairstyleChange();
@@ -1665,7 +1676,47 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         return false;
     }
 
-    /// <summary>Confirms the death actually happened after the fall-damage log line fired.</summary>
+    private void LogPlayerHpChanges()
+    {
+        if (this.objectTable.LocalPlayer is not ICharacter localPlayer)
+        {
+            this.previousPlayerHp = null;
+            this.recentPlayerMovement.Clear();
+            return;
+        }
+
+        var currentHp = localPlayer.CurrentHp;
+        var position = localPlayer.Position;
+        var character = (Character*)localPlayer.Address;
+        var jumping = character != null && character->IsJumping();
+        if (this.previousPlayerEntityId != localPlayer.EntityId)
+            this.recentPlayerMovement.Clear();
+
+        var now = DateTime.UtcNow;
+        this.recentPlayerMovement.Enqueue((now, position.Y, jumping));
+        while (this.recentPlayerMovement.Peek().Time < now - TimeSpan.FromSeconds(4))
+            this.recentPlayerMovement.Dequeue();
+
+        if (this.previousPlayerHp is { } previousHp && this.previousPlayerEntityId == localPlayer.EntityId && currentHp < previousHp)
+        {
+            var highestY = this.recentPlayerMovement.Max(sample => sample.Height);
+            var wasJumping = this.recentPlayerMovement.Any(sample => sample.Jumping);
+            if (currentHp == 0 && wasJumping && highestY - position.Y >= 8f)
+                this.fallDamageFramesRemaining = InventorySettleFrames;
+
+            this.log.Information($"[CheckProgressTracker] Player HP loss: {previousHp}->{currentHp} (-{previousHp - currentHp}), " +
+                $"Y={this.previousPlayerPosition.Y:F2}->{position.Y:F2}, jumping={this.previousPlayerJumping}->{jumping}, " +
+                $"last4sMaxY={highestY:F2}, last4sDrop={highestY - position.Y:F2}, last4sJumping={wasJumping}, " +
+                $"inCombat={this.condition[ConditionFlag.InCombat]}, territory={this.clientState.TerritoryType}, fallConfirmationPending={this.fallDamageFramesRemaining > 0}");
+        }
+
+        this.previousPlayerHp = currentHp;
+        this.previousPlayerEntityId = localPlayer.EntityId;
+        this.previousPlayerPosition = position;
+        this.previousPlayerJumping = jumping;
+    }
+
+    /// <summary>Confirms death after a fall-damage log signal or a lethal descent.</summary>
     private void ProcessPendingFallDamage()
     {
         if (this.fallDamageFramesRemaining <= 0)
@@ -1946,21 +1997,27 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private void CheckRetainerMarketSlots()
     {
         const string checkId = "retainer-fill-sale-slots";
-        if (this.IsLockedIn(checkId))
+        if (this.configuration.ManuallyCompletedChecks.Contains(checkId))
             return;
 
-        var items = this.gameInventory.GetInventoryItems(GameInventoryType.RetainerMarket);
-        if (items.Length == 0)
+        var retainerManager = RetainerManager.Instance();
+        if (retainerManager == null || !retainerManager->IsReady)
             return;
 
         var filledSlots = 0;
-        foreach (var item in items)
+        for (uint index = 0; index < retainerManager->GetRetainerCount(); index++)
         {
-            if (!item.IsEmpty && item.ItemId != 0)
-                filledSlots++;
+            var retainer = retainerManager->GetRetainerBySortedIndex(index);
+            if (retainer != null && retainer->MarketItemCount > filledSlots)
+                filledSlots = retainer->MarketItemCount;
         }
 
-        this.SetCounterAtLeast(checkId, "slots", filledSlots);
+        if (this.GetValue(checkId, "slots") == filledSlots)
+            return;
+
+        this.GetOrCreateBucket(checkId)["slots"] = filledSlots;
+        this.Evaluate(checkId);
+        this.configuration.Save();
     }
 
     private void CheckDungeonDeath()
