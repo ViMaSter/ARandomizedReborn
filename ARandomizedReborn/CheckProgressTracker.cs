@@ -155,6 +155,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly IMarketBoard marketBoard;
     private readonly IBuddyList buddyList;
     private readonly IPartyList partyList;
+    private readonly IToastGui toastGui;
     private readonly IPluginLog log;
 
     private readonly HashSet<uint> uldahTerritoryIds = [];
@@ -164,6 +165,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly HashSet<uint> cheeseItemIds = [];
     private readonly HashSet<uint> mealItemIds = [];
     private readonly HashSet<uint> oreItemIds = [];
+    private readonly HashSet<uint> teleportTicketItemIds = [];
     private readonly HashSet<uint> fallDamageLogMessageIds = [];
     private readonly HashSet<uint> guestbookMessageLogIds = [];
     private readonly HashSet<uint> deepDungeonTrapLogIds = [];
@@ -182,6 +184,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private bool dungeonRunArmed;
     private bool dungeonRunHadDeath;
     private bool suppressAirshipCheck;
+    private readonly Dictionary<BreakingTrigger, DateTime> pendingBreakingTriggers = [];
     private string? lastCityStateName;
     private PendingInventoryAction? gatheringAction;
     private PendingInventoryAction? craftingAction;
@@ -240,6 +243,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         IMarketBoard marketBoard,
         IBuddyList buddyList,
         IPartyList partyList,
+        IToastGui toastGui,
         IPluginLog log)
     {
         this.configuration = configuration;
@@ -262,6 +266,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.marketBoard = marketBoard;
         this.buddyList = buddyList;
         this.partyList = partyList;
+        this.toastGui = toastGui;
         this.log = log;
 
         this.ResolveTerritories();
@@ -321,6 +326,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.dungeonRunArmed = false;
             this.dungeonRunHadDeath = false;
             this.suppressAirshipCheck = false;
+            this.pendingBreakingTriggers.Clear();
             this.gatheringAction = null;
             this.craftingAction = null;
             this.pendingCheeseUse = null;
@@ -402,6 +408,71 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
         this.GetOrCreateBucket(checkId)[stepId] = 0;
         this.configuration.Save();
+    }
+
+    /// <summary>Grace window before an armed trigger (e.g. a teleport whose destination zone never actually
+    /// changes) is applied anyway, so it can never get stuck armed forever waiting for a follow-up event.</summary>
+    private static readonly TimeSpan PendingBreakingTriggerExpiry = TimeSpan.FromSeconds(5);
+
+    /// <summary>Arms a breaking trigger; applied either by the matching follow-up event (see
+    /// <see cref="ConsumeBreakingTrigger"/>) or, failing that, automatically after <see cref="PendingBreakingTriggerExpiry"/>.</summary>
+    private void ArmBreakingTrigger(BreakingTrigger trigger)
+        => this.pendingBreakingTriggers[trigger] = DateTime.UtcNow;
+
+    /// <summary>Applies an armed trigger immediately, if one is pending.</summary>
+    private void ConsumeBreakingTrigger(BreakingTrigger trigger)
+    {
+        if (!this.pendingBreakingTriggers.Remove(trigger))
+            return;
+
+        this.ApplyBreakingTrigger(trigger);
+    }
+
+    /// <summary>Safety net for triggers whose expected follow-up event never arrives.</summary>
+    private void ExpirePendingBreakingTriggers()
+    {
+        if (this.pendingBreakingTriggers.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        foreach (var trigger in this.pendingBreakingTriggers
+            .Where(pair => now - pair.Value >= PendingBreakingTriggerExpiry)
+            .Select(pair => pair.Key)
+            .ToArray())
+        {
+            this.pendingBreakingTriggers.Remove(trigger);
+            this.ApplyBreakingTrigger(trigger);
+        }
+    }
+
+    /// <summary>Resets progress (with a toast) for every not-yet-completed check declaring this trigger.</summary>
+    private void ApplyBreakingTrigger(BreakingTrigger trigger)
+    {
+        foreach (var definition in Checks.Definitions)
+        {
+            if (this.IsLockedIn(definition.Id))
+                continue;
+
+            foreach (var rule in definition.Breaks)
+            {
+                if (rule.Trigger == trigger)
+                    this.ResetCheckProgress(definition, rule.Reason);
+            }
+        }
+    }
+
+    /// <summary>Clears all recorded progress for a check and, if it actually had any, tells the user why.</summary>
+    private void ResetCheckProgress(CheckDefinition definition, string reason)
+    {
+        if (!this.configuration.CheckStepProgress.TryGetValue(definition.Id, out var bucket) || bucket.Count == 0)
+            return;
+
+        if (!bucket.Values.Any(value => value != 0))
+            return;
+
+        bucket.Clear();
+        this.configuration.Save();
+        this.toastGui.ShowQuest($"Check {definition.DisplayName} reset: {reason}");
     }
 
     public void AdjustCounter(string checkId, string stepId, int delta)
@@ -563,6 +634,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
                 this.oreItemIds.Add(row.RowId);
             }
 
+            if (name.Contains("Aetheryte Ticket", StringComparison.OrdinalIgnoreCase) && row.ItemAction.RowId != 0)
+                this.teleportTicketItemIds.Add(row.RowId);
         }
 
         foreach (var row in this.dataManager.GetExcelSheet<FishingNoteInfo>(ClientLanguage.English))
@@ -577,6 +650,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             this.log.Warning("Could not resolve any usable cheese items; cheese-on-the-moon tracking will be unavailable.");
         if (this.oreItemIds.Count == 0)
             this.log.Warning("Could not resolve any ore items; gather-five-ores tracking will be unavailable.");
+        if (this.teleportTicketItemIds.Count == 0)
+            this.log.Warning("Could not resolve any Aetheryte Ticket items; teleport-ticket tracking will be unavailable.");
+        else
+            this.log.Debug($"[CheckProgressTracker] Resolved {this.teleportTicketItemIds.Count} Aetheryte Ticket item id(s): {string.Join(", ", this.teleportTicketItemIds)}");
     }
 
     /// <summary>Scans the LogMessage sheet for the fall-damage combat log line instead of hardcoding a curated ID.</summary>
@@ -639,6 +716,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private void OnTerritoryChanged(uint territoryId)
     {
         this.ResetTransientContentTracking();
+
+        // Applied before territory-based flag updates below so a teleport landing back in
+        // Ul'dah still re-arms "left-uldah" instead of the break immediately wiping it out again.
+        this.ConsumeBreakingTrigger(BreakingTrigger.TeleportOrReturn);
 
         const string checkId = "pray-return-waking-sands";
         if (!this.IsLockedIn(checkId))
@@ -823,6 +904,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
     private void OnActionUsed(ActionType actionType, uint actionId, ulong targetId)
     {
+        this.log.Debug($"[CheckProgressTracker] ActionUsed: type={actionType} id={actionId} target={targetId}");
+
         if (actionType == ActionType.GeneralAction && actionId == this.sprintBlocker.SprintGeneralActionId)
             this.fleeAttemptUsedSprint = true;
 
@@ -852,25 +935,16 @@ public sealed unsafe class CheckProgressTracker : IDisposable
                 this.pendingFoodEat = new PendingFoodEat { ItemId = baseItemId };
         }
 
-        const string prayCheckId = "pray-return-waking-sands";
-        var isTeleportOrReturn = actionType == ActionType.GeneralAction &&
-            (actionId == this.sprintBlocker.TeleportGeneralActionId || actionId == this.sprintBlocker.ReturnGeneralActionId);
-
-        if (!this.IsLockedIn(prayCheckId) && isTeleportOrReturn)
-        {
-            this.ResetFlag(prayCheckId, "left-uldah");
-            this.ResetFlag(prayCheckId, "arrived");
-        }
+        var usedItemId = actionType == ActionType.Item ? NormalizeItemActionId(actionId) : 0u;
+        var isTeleportOrReturn = (actionType == ActionType.GeneralAction &&
+            (actionId == this.sprintBlocker.TeleportGeneralActionId || actionId == this.sprintBlocker.ReturnGeneralActionId)) ||
+            (actionType == ActionType.Item && this.teleportTicketItemIds.Contains(usedItemId));
 
         if (isTeleportOrReturn)
-            this.suppressAirshipCheck = true;
-
-        if (actionType == ActionType.GeneralAction && actionId == this.sprintBlocker.TeleportGeneralActionId)
         {
-            const string aetheryteCheckId = "three-starting-aetherytes";
-            this.ResetFlag(aetheryteCheckId, "limsa");
-            this.ResetFlag(aetheryteCheckId, "gridania");
-            this.ResetFlag(aetheryteCheckId, "uldah");
+            this.log.Debug($"[CheckProgressTracker] Teleport/Return detected (type={actionType} id={actionId} normalizedItemId={usedItemId}); arming breaking trigger.");
+            this.suppressAirshipCheck = true;
+            this.ArmBreakingTrigger(BreakingTrigger.TeleportOrReturn);
         }
 
         const string mountCheckId = "mount-indoors";
@@ -1084,6 +1158,8 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
     private void OnAetheryteInteracted(uint aetheryteId)
     {
+        this.log.Debug($"[CheckProgressTracker] AetheryteInteracted: aetheryteId={aetheryteId}");
+
         const string checkId = "three-starting-aetherytes";
         if (this.IsLockedIn(checkId) || !this.startingAetheryteSteps.TryGetValue(aetheryteId, out var stepId))
             return;
@@ -1115,6 +1191,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.ProcessPendingHairstyleChange();
         this.ExpireCutsceneReplayTracking();
         this.TrackTrialAttempt();
+        this.ExpirePendingBreakingTriggers();
 
         this.tickCounter++;
         if (this.tickCounter % 30 != 0)

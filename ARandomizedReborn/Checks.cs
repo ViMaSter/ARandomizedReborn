@@ -4,15 +4,29 @@ using System.Linq;
 
 namespace ARandomizedReborn;
 
+/// <summary>A game event that, when observed, cancels any in-progress steps for checks declaring it.</summary>
+public enum BreakingTrigger
+{
+    /// <summary>Player used Teleport, Return, or a teleport ticket item.</summary>
+    TeleportOrReturn,
+}
+
+/// <param name="Reason">Shown to the user (e.g. via toast) when this rule cancels progress.</param>
+public sealed record BreakingRule(BreakingTrigger Trigger, string Reason);
+
 /// <param name="RequiredUnlock">The unlock that must be granted before this check is even attemptable.</param>
+/// <param name="BreakingRules">Game events that reset this check's progress back to zero.</param>
 public sealed record CheckDefinition(
     string Id,
     string DisplayName,
     string Description,
     UnlockKey? RequiredUnlock,
-    IReadOnlyList<CheckStepDefinition> Steps)
+    IReadOnlyList<CheckStepDefinition> Steps,
+    IReadOnlyList<BreakingRule>? BreakingRules = null)
 {
     public bool IsFullyAutomatic => this.Steps.All(step => step.Automatic);
+
+    public IReadOnlyList<BreakingRule> Breaks => this.BreakingRules ?? [];
 }
 
 public static class Checks
@@ -26,6 +40,8 @@ public static class Checks
 
     private static IReadOnlyList<CheckStepDefinition> Steps(params CheckStepDefinition[] steps) => steps;
 
+    private static IReadOnlyList<BreakingRule> Breaks(params BreakingRule[] rules) => rules;
+
     public static readonly IReadOnlyList<CheckDefinition> Definitions =
     [
         // No unlock required.
@@ -34,7 +50,8 @@ public static class Checks
             null,
             Steps(
                 new("left-uldah", "Start out in Ul'dah", ProgressStepKind.Flag, Automatic: true),
-                new("arrived", "Arrive at the Waking Sands on foot", ProgressStepKind.Flag, Automatic: true))),
+                new("arrived", "Arrive at the Waking Sands on foot", ProgressStepKind.Flag, Automatic: true)),
+            Breaks(new BreakingRule(BreakingTrigger.TeleportOrReturn, "used Teleport or Return"))),
         new("point-blue-alisaie", "/point at Blue Alisaie",
             "Find Alisaie, target her and use the 'Point' emote.", null,
             Auto("Point at Blue Alisaie")),
@@ -73,7 +90,8 @@ public static class Checks
             Steps(
                 new("limsa", "Interact with Limsa Lominsa's aetheryte", ProgressStepKind.Flag, Automatic: true),
                 new("gridania", "Interact with Gridania's aetheryte", ProgressStepKind.Flag, Automatic: true),
-                new("uldah", "Interact with Ul'dah's aetheryte", ProgressStepKind.Flag, Automatic: true))),
+                new("uldah", "Interact with Ul'dah's aetheryte", ProgressStepKind.Flag, Automatic: true)),
+            Breaks(new BreakingRule(BreakingTrigger.TeleportOrReturn, "used Teleport, Return, or a teleport ticket"))),
         new("heal-hurt-player", "Heal a hurt player",
             "Heal an injured player in the open world.", null,
             Steps(

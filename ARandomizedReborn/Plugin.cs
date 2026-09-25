@@ -91,7 +91,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         CheckProgressTracker = new CheckProgressTracker(
             Configuration, ReportCheck, Framework, ClientState, Condition, DutyState, PlayerState, TargetManager, ObjectTable, GameInventory,
-            FateTable, DataManager, SprintBlocker, InteractionRestrictionManager, ChatGui, AddonLifecycle, AgentLifecycle, MarketBoard, BuddyList, PartyList, Log);
+            FateTable, DataManager, SprintBlocker, InteractionRestrictionManager, ChatGui, AddonLifecycle, AgentLifecycle, MarketBoard, BuddyList, PartyList, ToastGui, Log);
         CheckProgressTracker.SetEnabled(Configuration.EnableRandomizer);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);

@@ -31,6 +31,7 @@ public sealed unsafe class SprintBlocker : IDisposable
     private readonly IToastGui toastGui;
     private readonly IFramework framework;
     private readonly IGameGui gameGui;
+    private readonly IPluginLog log;
     private readonly HashSet<nint> highlightedIcons = [];
     private readonly Dictionary<uint, byte> actionLevels = [];
 
@@ -72,6 +73,7 @@ public sealed unsafe class SprintBlocker : IDisposable
         this.toastGui = toastGui;
         this.framework = framework;
         this.gameGui = gameGui;
+        this.log = log;
 
         foreach (var row in dataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>(ClientLanguage.English))
             this.actionLevels[row.RowId] = row.ClassJobLevel;
@@ -152,6 +154,8 @@ public sealed unsafe class SprintBlocker : IDisposable
         if (!this.IsEnabled)
             return useActionHook.Original(thisPtr, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
 
+        this.log.Debug($"[SprintBlocker] UseAction: type={actionType} id={actionId} target={targetId}");
+
         if (this.TryGetBlockReason(actionType, actionId, out var blockReason))
         {
             UIGlobals.PlayChatSoundEffect(11);
@@ -168,6 +172,8 @@ public sealed unsafe class SprintBlocker : IDisposable
         if (!this.IsEnabled)
             return useActionLocationHook.Original(thisPtr, actionType, actionId, targetId, location, extraParam, a7);
 
+        this.log.Debug($"[SprintBlocker] UseActionLocation: type={actionType} id={actionId} target={targetId}");
+
         // Don't fire ActionUsed/toast here for actions that already passed through DetourUseAction;
         // this hook only needs to catch entry points (e.g. item right-click "Use") that skip it entirely.
         if (this.TryGetBlockReason(actionType, actionId, out var blockReason))
@@ -182,6 +188,8 @@ public sealed unsafe class SprintBlocker : IDisposable
 
     private bool DetourTeleportWithTickets(Telepo.SelectUseTicketInvoker* thisPtr, uint aetheryteId, byte subIndex)
     {
+        this.log.Debug($"[SprintBlocker] TeleportWithTickets: aetheryteId={aetheryteId} subIndex={subIndex}");
+
         if (!this.IsEnabled || this.UnlockTeleportReturn)
             return teleportWithTicketsHook.Original(thisPtr, aetheryteId, subIndex);
 
@@ -195,6 +203,8 @@ public sealed unsafe class SprintBlocker : IDisposable
         if (!this.IsEnabled)
             return useItemHook.Original(thisPtr, itemId, inventoryType, itemSlot, a5);
 
+        this.log.Debug($"[SprintBlocker] UseItem: itemId={itemId} inventoryType={inventoryType} itemSlot={itemSlot}");
+
         if (this.TryGetBlockReason(ActionType.Item, itemId, out var blockReason))
         {
             UIGlobals.PlayChatSoundEffect(11);
@@ -202,6 +212,9 @@ public sealed unsafe class SprintBlocker : IDisposable
             return 0;
         }
 
+        // This hook is the only entry point reached by items that open a follow-up UI (Aetheryte
+        // Tickets, etc.) instead of going through ActionManager, so raise ActionUsed here too.
+        this.ActionUsed?.Invoke(ActionType.Item, itemId, 0);
         return useItemHook.Original(thisPtr, itemId, inventoryType, itemSlot, a5);
     }
 

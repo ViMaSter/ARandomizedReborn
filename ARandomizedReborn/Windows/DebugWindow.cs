@@ -48,7 +48,7 @@ public class DebugWindow : Window, IDisposable
 
         ImGui.Separator();
 
-        using var table = ImRaii.Table("##debug-checks", 5,
+        using var table = ImRaii.Table("##debug-checks", 6,
             ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.Sortable);
         if (!table.Success)
             return;
@@ -57,6 +57,7 @@ public class DebugWindow : Window, IDisposable
         ImGui.TableSetupColumn("Requires", ImGuiTableColumnFlags.WidthStretch, 2);
         ImGui.TableSetupColumn("On board", ImGuiTableColumnFlags.WidthStretch, 1);
         ImGui.TableSetupColumn("State", ImGuiTableColumnFlags.WidthStretch, 1.5f);
+        ImGui.TableSetupColumn("Has ever triggered", ImGuiTableColumnFlags.WidthStretch, 2);
         ImGui.TableSetupColumn("Force", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.NoSort, 1);
         ImGui.TableSetupScrollFreeze(0, 1);
         ImGui.TableHeadersRow();
@@ -81,6 +82,9 @@ public class DebugWindow : Window, IDisposable
                 3 => ascending
                     ? statuses.OrderBy(GetStateSortKey)
                     : statuses.OrderByDescending(GetStateSortKey),
+                4 => ascending
+                    ? statuses.OrderBy(status => status.HasEverTriggered)
+                    : statuses.OrderByDescending(status => status.HasEverTriggered),
                 _ => sortedStatuses,
             };
         }
@@ -121,6 +125,15 @@ public class DebugWindow : Window, IDisposable
                 ImGui.TextColored(ManualColor, "overridden");
             else
                 ImGui.TextColored(DoneColor, "detected");
+
+            ImGui.TableNextColumn();
+            ImGui.TextColored(status.HasEverTriggered ? DoneColor : LockedColor, status.HasEverTriggered ? "yes" : "no");
+            if (status.HasEverTriggered)
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton($"Reset##ever-triggered-{status.Definition.Id}"))
+                    session.ResetEverTriggered(status.Definition.Id);
+            }
 
             ImGui.TableNextColumn();
             using (ImRaii.Disabled(status.IsComplete))

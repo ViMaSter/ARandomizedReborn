@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace ARandomizedReborn;
 
-public sealed record CheckStatus(CheckDefinition Definition, bool IsComplete, bool WasManualOverride, bool IsOnBoard, bool IsAttemptable);
+public sealed record CheckStatus(CheckDefinition Definition, bool IsComplete, bool WasManualOverride, bool IsOnBoard, bool IsAttemptable, bool HasEverTriggered);
 
 public sealed class BingoSession : IDisposable
 {
@@ -59,7 +59,8 @@ public sealed class BingoSession : IDisposable
             this.configuration.CompletedChecks.Contains(definition.Id),
             this.configuration.ManuallyCompletedChecks.Contains(definition.Id),
             onBoard.Contains(definition.Id),
-            definition.RequiredUnlock == null || Unlocks.Get(this.configuration, definition.RequiredUnlock.Value)))
+            definition.RequiredUnlock == null || Unlocks.Get(this.configuration, definition.RequiredUnlock.Value),
+            this.configuration.EverTriggeredChecks.Contains(definition.Id)))
             .OrderBy(status => status.Definition.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
@@ -119,6 +120,8 @@ public sealed class BingoSession : IDisposable
         var alreadyComplete = !this.configuration.CompletedChecks.Add(checkId);
         if (manualOverride)
             this.configuration.ManuallyCompletedChecks.Add(checkId);
+        else if (!alreadyComplete)
+            this.configuration.EverTriggeredChecks.Add(checkId);
 
         var cell = this.configuration.BingoBoard.FirstOrDefault(entry => entry.CheckId == checkId);
         if (cell == null)
@@ -147,6 +150,12 @@ public sealed class BingoSession : IDisposable
         this.EvaluateWin();
         this.configuration.Save();
         return true;
+    }
+
+    public void ResetEverTriggered(string checkId)
+    {
+        if (this.configuration.EverTriggeredChecks.Remove(checkId))
+            this.configuration.Save();
     }
 
     public void ResetProgressOnly()
