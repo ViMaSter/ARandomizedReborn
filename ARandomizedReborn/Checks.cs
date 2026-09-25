@@ -111,8 +111,8 @@ public static class Checks
 
         // Allied societies.
         new("society-three-dailies", "Allied society regular",
-            "Complete three daily quests for a single allied society.", UnlockKey.AlliedSocieties,
-            AutoCount("dailies", "Daily quests completed for one society", 3)),
+            "Complete one daily quest for any allied society.", UnlockKey.AlliedSocieties,
+            AutoCount("dailies", "Allied society daily quests completed", 1)),
 
         // Deep dungeon.
         new("deepdungeon-step-trap", "Step on a trap",

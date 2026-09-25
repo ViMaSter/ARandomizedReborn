@@ -1350,12 +1350,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         const string checkId = "society-three-dailies";
         var bucket = this.GetOrCreateBucket(checkId);
         var resetCycle = (DateTimeOffset.UtcNow - TimeSpan.FromHours(15)).ToUnixTimeSeconds() / (24 * 60 * 60);
-        var societyPrefix = $"{SocietyEvidencePrefix}{societyId}:";
-        if (!bucket.TryAdd($"{societyPrefix}{resetCycle}:{questId}", 1))
+        if (!bucket.TryAdd($"{SocietyEvidencePrefix}{societyId}:{resetCycle}:{questId}", 1))
             return;
 
-        var count = bucket.Keys.Count(key => key.StartsWith(societyPrefix, StringComparison.Ordinal));
-        bucket["dailies"] = Math.Max(bucket.GetValueOrDefault("dailies"), count);
+        bucket["dailies"] = 1;
         this.Evaluate(checkId);
         this.configuration.Save();
     }
