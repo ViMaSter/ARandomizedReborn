@@ -358,6 +358,41 @@ public sealed unsafe class CheckProgressTracker : IDisposable
 
     public bool IsLockedIn(string checkId) => this.configuration.CompletedChecks.Contains(checkId);
 
+    public (string Name, int Filled, int Capacity)? GetFullestArmoryCategory()
+    {
+        (string Name, int Filled, int Capacity)? best = null;
+        foreach (var category in ArmoryCategories)
+        {
+            var items = this.gameInventory.GetInventoryItems(category);
+            if (items.Length == 0)
+                continue;
+
+            var filled = 0;
+            foreach (var item in items)
+            {
+                if (!item.IsEmpty && item.ItemId != 0)
+                    filled++;
+            }
+
+            if (best == null || filled > best.Value.Filled)
+            {
+                var name = category switch
+                {
+                    GameInventoryType.ArmoryMainHand => "Main Hand",
+                    GameInventoryType.ArmoryOffHand => "Off Hand",
+                    GameInventoryType.ArmoryFeets => "Feet",
+                    GameInventoryType.ArmoryEar => "Earrings",
+                    GameInventoryType.ArmoryRings => "Rings",
+                    GameInventoryType.ArmorySoulCrystal => "Soul Crystals",
+                    _ => category.ToString()["Armory".Length..],
+                };
+                best = (name, filled, items.Length);
+            }
+        }
+
+        return best;
+    }
+
     public int GetValue(string checkId, string stepId)
         => this.configuration.CheckStepProgress.TryGetValue(checkId, out var steps) && steps.TryGetValue(stepId, out var value) ? value : 0;
 

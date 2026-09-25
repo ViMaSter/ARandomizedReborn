@@ -65,6 +65,37 @@ public sealed class BingoSession : IDisposable
             .ToArray();
     }
 
+    public IReadOnlyList<CheckDefinition> GetNextChecks(CheckProgressTracker progress, int count)
+    {
+        return this.Cells.Select((cell, index) => (cell, index))
+            .Where(entry => !entry.cell.IsComplete && entry.cell.Definition != null)
+            .OrderBy(entry => UnlockDepth(entry.cell, []))
+            .ThenBy(entry => entry.cell.Definition!.Steps.Count(step => !progress.IsStepSatisfied(entry.cell.CheckId, step)))
+            .ThenBy(entry => BingoBoard.Lines.Where(line => line.Contains(entry.index))
+                .Min(line => line.Count(index => !this.Cells[index].IsComplete)))
+            .ThenBy(entry => BingoBoard.Lines.Select((line, index) => (line, index))
+                .Where(line => line.line.Contains(entry.index))
+                .OrderBy(line => line.line.Count(index => !this.Cells[index].IsComplete))
+                .First().index)
+            .ThenBy(entry => entry.index)
+            .ThenBy(entry => entry.cell.Definition!.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Take(count)
+            .Select(entry => entry.cell.Definition!)
+            .ToArray();
+
+        int UnlockDepth(BingoCell cell, HashSet<UnlockKey> visited)
+        {
+            if (cell.RequiredUnlock is not { } required || Unlocks.Get(this.configuration, required))
+                return 0;
+
+            if (!visited.Add(required))
+                return int.MaxValue / 2;
+
+            var prerequisite = this.Cells.FirstOrDefault(other => other.Reward == required);
+            return prerequisite == null ? int.MaxValue / 2 : 1 + UnlockDepth(prerequisite, visited);
+        }
+    }
+
     /// <summary>Generates a new board off the main thread, then locks everything and applies it.</summary>
     public async Task StartNewSessionAsync(BingoDifficulty difficulty, Func<Action, Task> runOnGameThread)
     {

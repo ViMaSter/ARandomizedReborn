@@ -88,9 +88,9 @@ public static class Checks
         new("three-starting-aetherytes", "Tour the aetherytes",
             "Interact with all three starting city-state aetherytes without teleporting.", null,
             Steps(
-                new("limsa", "Interact with Limsa Lominsa's aetheryte", ProgressStepKind.Flag, Automatic: true),
+                new("uldah", "Interact with Ul'dah's aetheryte", ProgressStepKind.Flag, Automatic: true),
                 new("gridania", "Interact with Gridania's aetheryte", ProgressStepKind.Flag, Automatic: true),
-                new("uldah", "Interact with Ul'dah's aetheryte", ProgressStepKind.Flag, Automatic: true)),
+                new("limsa", "Interact with Limsa Lominsa's aetheryte", ProgressStepKind.Flag, Automatic: true)),
             Breaks(new BreakingRule(BreakingTrigger.TeleportOrReturn, "used Teleport, Return, or a teleport ticket"))),
         new("heal-hurt-player", "Heal a hurt player",
             "Heal an injured player in the open world.", null,

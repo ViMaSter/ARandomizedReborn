@@ -52,6 +52,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public SprintBlocker SprintBlocker { get; init; }
     public ObjectiveTracker ObjectiveTracker { get; init; }
     public CheckProgressTracker CheckProgressTracker { get; init; }
+    public QuestTrackerManager QuestTrackerManager { get; init; }
     public BingoSession BingoSession { get; init; }
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
@@ -93,6 +94,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Configuration, ReportCheck, Framework, ClientState, Condition, DutyState, PlayerState, TargetManager, ObjectTable, GameInventory,
             FateTable, DataManager, SprintBlocker, InteractionRestrictionManager, ChatGui, AddonLifecycle, AgentLifecycle, MarketBoard, BuddyList, PartyList, ToastGui, Log);
         CheckProgressTracker.SetEnabled(Configuration.EnableRandomizer);
+
+        QuestTrackerManager = new QuestTrackerManager(Framework, DataManager, BingoSession, CheckProgressTracker, Log);
+        QuestTrackerManager.SetEnabled(Configuration.EnableRandomizer);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
@@ -152,6 +156,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         DebugWindow.Dispose();
         SprintBlocker.Dispose();
         ObjectiveTracker.Dispose();
+        QuestTrackerManager.Dispose();
         CheckProgressTracker.Dispose();
         BingoSession.Dispose();
         InteractionRestrictionManager.Dispose();
@@ -249,6 +254,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         SprintBlocker.IsEnabled = enabled;
         ObjectiveTracker.SetEnabled(enabled);
         CheckProgressTracker.SetEnabled(enabled);
+        QuestTrackerManager.SetEnabled(enabled);
         InteractionRestrictionManager.SetEnabled(enabled);
         UiRestrictionManager.SetEnabled(enabled);
         AgentRestrictionManager.SetEnabled(enabled);
