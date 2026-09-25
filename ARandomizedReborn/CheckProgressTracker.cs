@@ -52,8 +52,6 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private const int PendingLootFrames = 300;
     private const int HairstyleSettleFrames = 1800;
 
-    private static readonly HashSet<byte> EliteMarkBillIndices = [4, 5, 9, 13, 17, 21];
-
     private sealed class FateAttempt
     {
         public required FateState State { get; set; }
@@ -173,7 +171,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private readonly HashSet<uint> marketSaleLogIds = [];
     private readonly HashSet<uint> timeRestrictedFishItemIds = [];
     private readonly HashSet<uint> areaActionIds = [];
-    private readonly Dictionary<byte, (int OrderRowId, bool IsComplete)> markBillStates = [];
+    private readonly Dictionary<byte, (int OrderRowId, bool IsComplete, int[] Kills)> markBillStates = [];
     private readonly Dictionary<ushort, (bool IsCompleted, uint SocietyId)> dailyQuestSnapshot = [];
     private uint wakingSandsTerritoryId;
 
@@ -200,8 +198,6 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     private int fallDamageFramesRemaining;
     private uint? previousPlayerHp;
     private ulong previousPlayerEntityId;
-    private Vector3 previousPlayerPosition;
-    private bool previousPlayerJumping;
     private readonly Queue<(DateTime Time, float Height, bool Jumping)> recentPlayerMovement = new();
     private readonly List<PendingInventoryAction> pendingGatheringActions = [];
     private readonly List<PendingInventoryAction> pendingCraftingActions = [];
@@ -672,9 +668,6 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             if (text.Contains("fall", StringComparison.OrdinalIgnoreCase) && text.Contains("damage", StringComparison.OrdinalIgnoreCase))
                 this.fallDamageLogMessageIds.Add(row.RowId);
         }
-
-        if (this.fallDamageLogMessageIds.Count == 0)
-            this.log.Warning("Could not resolve the fall-damage log message; using movement-based fall detection.");
     }
 
     private void ResolveSpecialLogMessages()
@@ -967,7 +960,6 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     {
         if (!this.IsLockedIn("die-fall-damage") && this.fallDamageLogMessageIds.Contains(message.LogMessageId))
         {
-            this.log.Information($"[CheckProgressTracker] Fall-damage log signal: id={message.LogMessageId}");
             this.fallDamageFramesRemaining = InventorySettleFrames;
         }
 
@@ -990,6 +982,14 @@ public sealed unsafe class CheckProgressTracker : IDisposable
     /// <summary>Catches the case where all 3 daily Mini Cactpot tickets were already used before this session could count them.</summary>
     private void OnChatMessage(Dalamud.Game.Chat.IChatMessage message)
     {
+        if (!this.IsLockedIn("mark-bill-five-hunts") &&
+            message.Message.TextValue.Contains("mark bills objectives complete!", StringComparison.OrdinalIgnoreCase) &&
+            this.markBillStates.Values.Any(state => !state.IsComplete))
+        {
+            this.log.Information("[HuntProbe] mark bill completion confirmed by chat fallback");
+            this.SetCounterAtLeast("mark-bill-five-hunts", "hunts", 1);
+        }
+
         if (message.LogKind != Dalamud.Game.Text.XivChatType.NPCDialogue)
             return;
 
@@ -1196,7 +1196,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         this.CheckMiniCactpot();
         this.ProcessPendingHeal();
         this.ProcessPendingFoodEat();
-        this.LogPlayerHpChanges();
+        this.TrackPlayerHpChanges();
         this.ProcessPendingFallDamage();
         this.CaptureInnHairstyle();
         this.ProcessPendingHairstyleChange();
@@ -1254,34 +1254,53 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         var orders = this.dataManager.GetSubrowExcelSheet<MobHuntOrder>(ClientLanguage.English);
         for (byte markIndex = 0; markIndex < MobHunt.MaxMarkIndex; markIndex++)
         {
-            if (EliteMarkBillIndices.Contains(markIndex) || !mobHunt->IsMarkBillObtained(markIndex))
+            var obtained = mobHunt->IsMarkBillObtained(markIndex);
+            var hadPrevious = this.markBillStates.TryGetValue(markIndex, out var previous);
+            if (!obtained && !hadPrevious)
                 continue;
 
-            var orderRowId = mobHunt->GetObtainedHuntOrderRowId(markIndex);
-            if (orderRowId <= 0)
+            var orderRowId = obtained ? mobHunt->GetObtainedHuntOrderRowId(markIndex) : 0;
+            var killCounts = Enumerable.Range(0, 5).Select(targetIndex => mobHunt->GetKillCount(markIndex, (byte)targetIndex)).ToArray();
+            var trackedOrderRowId = obtained ? orderRowId : hadPrevious ? previous.OrderRowId : 0;
+            if (trackedOrderRowId <= 0)
                 continue;
 
             var isComplete = true;
+            var targetIndices = new List<ushort>();
             for (ushort targetIndex = 0; targetIndex < 5; targetIndex++)
             {
-                if (!orders.TryGetSubrow((uint)orderRowId, targetIndex, out var order) ||
-                    mobHunt->GetKillCount(markIndex, (byte)targetIndex) < order.NeededKills)
-                {
-                    isComplete = false;
+                if (!orders.TryGetSubrow((uint)trackedOrderRowId, targetIndex, out var order))
                     break;
-                }
+
+                if (order.NeededKills <= 0)
+                    continue;
+
+                targetIndices.Add(targetIndex);
+                if (killCounts[targetIndex] < order.NeededKills)
+                    isComplete = false;
             }
 
-            if (!this.markBillStates.TryGetValue(markIndex, out var previous) || previous.OrderRowId != orderRowId)
+            if (targetIndices.Count == 0)
+                isComplete = false;
+
+            if (!obtained)
             {
-                this.markBillStates[markIndex] = (orderRowId, isComplete);
+                this.markBillStates.Remove(markIndex);
+                if (hadPrevious && !previous.IsComplete && isComplete &&
+                    targetIndices.Any(targetIndex => killCounts[targetIndex] > previous.Kills[targetIndex]))
+                {
+                    this.log.Information($"[HuntProbe] bill index={markIndex} completed on final kill (order={trackedOrderRowId})");
+                    this.SetCounterAtLeast(checkId, "hunts", 1);
+                }
+
                 continue;
             }
 
-            this.markBillStates[markIndex] = (orderRowId, isComplete);
-            if (!previous.IsComplete && isComplete)
+            this.markBillStates[markIndex] = (orderRowId, isComplete, killCounts);
+            if (hadPrevious && previous.OrderRowId == orderRowId && !previous.IsComplete && isComplete)
             {
-                this.SetCounterAtLeast(checkId, "hunts", 5);
+                this.log.Information($"[HuntProbe] bill index={markIndex} completed while obtained (order={orderRowId})");
+                this.SetCounterAtLeast(checkId, "hunts", 1);
                 return;
             }
         }
@@ -1676,7 +1695,7 @@ public sealed unsafe class CheckProgressTracker : IDisposable
         return false;
     }
 
-    private void LogPlayerHpChanges()
+    private void TrackPlayerHpChanges()
     {
         if (this.objectTable.LocalPlayer is not ICharacter localPlayer)
         {
@@ -1704,16 +1723,10 @@ public sealed unsafe class CheckProgressTracker : IDisposable
             if (currentHp == 0 && wasJumping && highestY - position.Y >= 8f)
                 this.fallDamageFramesRemaining = InventorySettleFrames;
 
-            this.log.Information($"[CheckProgressTracker] Player HP loss: {previousHp}->{currentHp} (-{previousHp - currentHp}), " +
-                $"Y={this.previousPlayerPosition.Y:F2}->{position.Y:F2}, jumping={this.previousPlayerJumping}->{jumping}, " +
-                $"last4sMaxY={highestY:F2}, last4sDrop={highestY - position.Y:F2}, last4sJumping={wasJumping}, " +
-                $"inCombat={this.condition[ConditionFlag.InCombat]}, territory={this.clientState.TerritoryType}, fallConfirmationPending={this.fallDamageFramesRemaining > 0}");
         }
 
         this.previousPlayerHp = currentHp;
         this.previousPlayerEntityId = localPlayer.EntityId;
-        this.previousPlayerPosition = position;
-        this.previousPlayerJumping = jumping;
     }
 
     /// <summary>Confirms death after a fall-damage log signal or a lethal descent.</summary>
