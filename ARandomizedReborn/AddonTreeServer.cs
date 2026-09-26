@@ -137,6 +137,9 @@ public sealed class AddonTreeServer : IDisposable
 
     private unsafe object? Snapshot(string name, Dictionary<string, string> parameters)
     {
+        if (name == "Capture")
+            return DebugCapture.Snapshot();
+
         var addon = (AtkUnitBase*)this.gameGui.GetAddonByName(name).Address;
         if (addon == null || !addon->IsReady)
             return null;
@@ -169,6 +172,7 @@ public sealed class AddonTreeServer : IDisposable
             widgetCount = addon->UldManager.ObjectCount,
             nodeListCount = addon->UldManager.NodeListCount,
             nodeList = SnapshotNodeList(&addon->UldManager),
+            atkValues = SnapshotAtkValues(addon->AtkValues, addon->AtkValuesCount),
             root = SnapshotNode(addon->RootNode, visited, 0),
         };
     }
@@ -218,10 +222,65 @@ public sealed class AddonTreeServer : IDisposable
             flags = $"0x{(uint)node->NodeFlags:X}",
             drawFlags = $"0x{node->DrawFlags:X}",
             text = node->Type == NodeType.Text ? ((AtkTextNode*)node)->NodeText.ToString() : null,
+            texture = node->Type == NodeType.Image ? DescribeTexture((AtkImageNode*)node) : null,
             componentAddress = component == null ? null : $"0x{(nint)component:X}",
             componentNodeList = component == null ? null : SnapshotNodeList(&component->UldManager),
+            treeListItems = component != null && component->GetComponentType() == ComponentType.TreeList ? SnapshotTreeList((AtkComponentTreeList*)component) : null,
+            listItemIndex = component != null && component->GetComponentType() == ComponentType.ListItemRenderer ? ((AtkComponentListItemRenderer*)component)->ListItemIndex : (int?)null,
             children,
         };
+    }
+
+    private static unsafe string? DescribeTexture(AtkImageNode* image)
+    {
+        var parts = image->PartsList;
+        if (parts == null || parts->Parts == null || image->PartId >= parts->PartCount)
+            return null;
+
+        var asset = parts->Parts[image->PartId].UldAsset;
+        if (asset == null)
+            return null;
+
+        var texture = &asset->AtkTexture;
+        if (texture->TextureType != TextureType.Resource || texture->Resource == null)
+            return texture->TextureType.ToString();
+
+        var handle = texture->Resource->TexFileResourceHandle;
+        var file = handle == null ? string.Empty : handle->ResourceHandle.FileName.ToString();
+        return $"icon={texture->Resource->IconId} ready={texture->IsTextureReady()} {file}";
+    }
+
+    private static unsafe object[] SnapshotAtkValues(AtkValue* values, int count)
+    {
+        var result = new List<object>();
+        for (var index = 0; values != null && index < count && index < 4096; index++)
+        {
+            var value = values + index;
+            result.Add(new { index, type = value->Type.ToString(), value = value->Type == 0 ? null : value->ToString() });
+        }
+
+        return result.ToArray();
+    }
+
+    private static unsafe object[] SnapshotTreeList(AtkComponentTreeList* list)
+    {
+        var result = new List<object>();
+        for (var index = 0; index < (int)list->Items.Count && index < 1024; index++)
+        {
+            var item = list->Items[index].Value;
+            if (item == null)
+                continue;
+
+            var uints = new List<uint>();
+            foreach (var value in item->UIntValues)
+                uints.Add(value);
+            var strings = new List<string>();
+            foreach (var value in item->StringValues)
+                strings.Add(value.ToString());
+            result.Add(new { index, type = item->Type.ToString(), state = item->State.ToString(), depth = item->Depth, hidden = item->IsHidden, height = item->Height, renderer = $"0x{(nint)item->Renderer:X}", uints, strings });
+        }
+
+        return result.ToArray();
     }
 
     private static bool MatchesAddress(string address, nint value)

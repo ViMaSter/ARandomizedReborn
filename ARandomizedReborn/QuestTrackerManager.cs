@@ -39,14 +39,18 @@ public sealed unsafe class QuestTrackerManager : IDisposable
         this.session = session;
         this.progress = progress;
         this.log = log;
-        this.completedColor = (ushort)dataManager.GetExcelSheet<UIColor>(ClientLanguage.English)
+        this.completedColor = FindCompletedColor(dataManager);
+    }
+
+    /// <summary>Picks the UIColor row closest to a neutral grey, used to dim satisfied objectives.</summary>
+    internal static ushort FindCompletedColor(IDataManager dataManager)
+        => (ushort)dataManager.GetExcelSheet<UIColor>(ClientLanguage.English)
             .Where(row => row.RowId <= ushort.MaxValue)
             .OrderBy(row => Math.Abs((int)((row.Dark >> 24) & 0xff) - 150) +
                 Math.Abs((int)((row.Dark >> 16) & 0xff) - 150) +
                 Math.Abs((int)((row.Dark >> 8) & 0xff) - 150) +
                 ((row.Dark & 0xff) == 255 ? 0 : 1000))
             .First().RowId;
-    }
 
     public void SetEnabled(bool enabled)
     {

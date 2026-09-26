@@ -97,16 +97,19 @@ public sealed class BingoSession : IDisposable
         }
     }
 
+    /// <summary>0 = default sorting, 1 = prioritized in the task list, 2 = hidden from the task list.</summary>
     public int GetJournalPreference(string checkId)
         => this.configuration.JournalCheckPreferences.GetValueOrDefault(checkId);
 
-    public void CycleJournalPreference(string checkId)
+    public void SetJournalPreference(string checkId, int preference)
     {
-        var next = (this.GetJournalPreference(checkId) + 1) % 3;
-        if (next == 0)
+        if (preference is < 0 or > 2 || preference == this.GetJournalPreference(checkId))
+            return;
+
+        if (preference == 0)
             this.configuration.JournalCheckPreferences.Remove(checkId);
         else
-            this.configuration.JournalCheckPreferences[checkId] = next;
+            this.configuration.JournalCheckPreferences[checkId] = preference;
         this.configuration.Save();
     }
 

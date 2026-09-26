@@ -37,7 +37,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
-    [PluginService] internal static IAddonEventManager AddonEventManager { get; private set; } = null!;
     [PluginService] internal static IAgentLifecycle AgentLifecycle { get; private set; } = null!;
     [PluginService] internal static Dalamud.Plugin.Services.IGameInventory GameInventory { get; private set; } = null!;
     [PluginService] internal static IMarketBoard MarketBoard { get; private set; } = null!;
@@ -66,6 +65,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private DebugWindow DebugWindow { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
     private readonly Dictionary<nint, ushort> targetedEmotes = [];
+    private readonly DebugCapture debugCapture; // TEMP-CAPTURE
 
     public Plugin()
     {
@@ -101,10 +101,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
         QuestTrackerManager = new QuestTrackerManager(Framework, DataManager, BingoSession, CheckProgressTracker, Log);
         QuestTrackerManager.SetEnabled(Configuration.EnableRandomizer);
 
-        JournalManager = new JournalManager(Framework, GameGui, AddonLifecycle, AddonEventManager, BingoSession, CheckProgressTracker);
+        JournalManager = new JournalManager(GameGui, AddonLifecycle, AgentLifecycle, DataManager, BingoSession, CheckProgressTracker);
         JournalManager.SetEnabled(Configuration.EnableRandomizer);
 
         AddonTreeServer = new AddonTreeServer(Framework, GameGui, Log);
+        try { AddonTreeServer.Start(65251); } catch { } // TEMP-AUTOSTART
+        debugCapture = new DebugCapture(GameInteropProvider, AddonLifecycle, AgentLifecycle); // TEMP-CAPTURE
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
@@ -166,6 +168,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ObjectiveTracker.Dispose();
         JournalManager.Dispose();
         AddonTreeServer.Dispose();
+        debugCapture.Dispose(); // TEMP-CAPTURE
         QuestTrackerManager.Dispose();
         CheckProgressTracker.Dispose();
         BingoSession.Dispose();
