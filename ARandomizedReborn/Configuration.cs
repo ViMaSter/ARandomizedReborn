@@ -37,6 +37,7 @@ public class Configuration : IPluginConfiguration
     public HashSet<string> EverTriggeredChecks { get; set; } = [];
     public Dictionary<string, Dictionary<string, int>> CheckStepProgress { get; set; } = [];
     public bool BingoWon { get; set; } = false;
+    public int BingoSecondChancePoints { get; set; } = 9;
     public bool BingoHintModeEnabled { get; set; } = false;
     public int SkillLevelCap { get; set; } = 100;
     public int SprintHighlightRed { get; set; } = 90;

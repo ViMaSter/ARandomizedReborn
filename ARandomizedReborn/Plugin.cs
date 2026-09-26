@@ -105,7 +105,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
         JournalManager = new JournalManager(GameGui, AddonLifecycle, AgentLifecycle, DataManager, Configuration, BingoSession, CheckProgressTracker);
         JournalManager.SetEnabled(Configuration.EnableRandomizer);
 
-        BingoManager = new BingoManager(AddonLifecycle, BingoSession);
+        BingoWindow = new BingoWindow(this);
+        BingoManager = new BingoManager(
+            AddonLifecycle,
+            BingoSession,
+            () => BingoSession.ReplaceIncompleteCell(BingoSession.Cells.Select((cell, index) => (cell, index)).FirstOrDefault(entry => !entry.cell.IsComplete).index),
+            () => ShuffleIncomplete(BingoSession.Difficulty));
         BingoManager.SetEnabled(Configuration.EnableRandomizer);
 
         AddonTreeServer = new AddonTreeServer(Framework, GameGui, Log);
@@ -123,7 +128,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
-        BingoWindow = new BingoWindow(this);
         DebugWindow = new DebugWindow(this);
 
         WindowSystem.AddWindow(ConfigWindow);
@@ -247,6 +251,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void StartNewSession(BingoDifficulty difficulty)
         => _ = BingoSession.StartNewSessionAsync(difficulty, action => Framework.RunOnFrameworkThread(action));
+
+    public void ShuffleIncomplete(BingoDifficulty difficulty)
+        => _ = BingoSession.ShuffleIncompleteAsync(difficulty, action => Framework.RunOnFrameworkThread(action));
 
     public void ResetProgress() => BingoSession.ResetProgressOnly();
 

@@ -36,7 +36,69 @@ public sealed class BingoSession : IDisposable
 
     public bool HasWon => this.configuration.BingoWon;
 
+    public int SecondChancePoints => this.configuration.BingoSecondChancePoints;
+
     public int[]? WinningLine => this.HasBoard ? BingoBoard.FindCompletedLine(this.Cells) : null;
+
+    public bool ReplaceIncompleteCell(int index)
+    {
+        if (this.configuration.BingoSecondChancePoints <= 0 || index < 0 || index >= this.configuration.BingoBoard.Count ||
+            this.configuration.BingoBoard[index].IsComplete)
+            return false;
+
+        var used = this.configuration.BingoBoard.Select(cell => cell.CheckId).ToHashSet(StringComparer.Ordinal);
+        var candidates = Checks.Definitions
+            .Where(check => !used.Contains(check.Id) && !this.configuration.CompletedChecks.Contains(check.Id) &&
+                            (check.RequiredUnlock == null || Unlocks.Get(this.configuration, check.RequiredUnlock.Value)))
+            .ToList();
+        if (candidates.Count == 0)
+            return false;
+
+        var replacement = candidates[Random.Shared.Next(candidates.Count)];
+        var oldCheckId = this.configuration.BingoBoard[index].CheckId;
+        this.configuration.CheckStepProgress.Remove(oldCheckId);
+        this.configuration.BingoBoard[index].CheckId = replacement.Id;
+        this.configuration.BingoBoard[index].IsComplete = false;
+        this.configuration.BingoBoard[index].ManualOverride = false;
+        this.configuration.BingoSecondChancePoints--;
+        this.configuration.Save();
+        return true;
+    }
+
+    public async Task ShuffleIncompleteAsync(BingoDifficulty difficulty, Func<Action, Task> runOnGameThread)
+    {
+        if (this.configuration.BingoSecondChancePoints < 2 || this.IsGenerating)
+            return;
+
+        var result = await BingoBoard.GenerateAsync(difficulty, Environment.TickCount ^ Guid.NewGuid().GetHashCode(), null).ConfigureAwait(false);
+        await runOnGameThread(() =>
+        {
+            if (!result.Success)
+                return;
+
+            var completedChecks = this.configuration.BingoBoard.Where(cell => cell.IsComplete).Select(cell => cell.CheckId).ToHashSet(StringComparer.Ordinal);
+            var used = completedChecks.ToHashSet(StringComparer.Ordinal);
+            var replacements = result.Cells
+                .Where(cell => !completedChecks.Contains(cell.CheckId) && !this.configuration.CompletedChecks.Contains(cell.CheckId) && used.Add(cell.CheckId))
+                .ToList();
+            var replacementIndex = 0;
+            foreach (var cell in this.configuration.BingoBoard.Where(cell => !cell.IsComplete))
+            {
+                if (replacementIndex >= replacements.Count)
+                    break;
+                var oldCheckId = cell.CheckId;
+                var replacement = replacements[replacementIndex++];
+                this.configuration.CheckStepProgress.Remove(oldCheckId);
+                cell.CheckId = replacement.CheckId;
+                cell.Reward = replacement.Reward;
+                cell.ManualOverride = false;
+            }
+
+            this.configuration.BingoDifficulty = difficulty;
+            this.configuration.BingoSecondChancePoints -= 2;
+            this.configuration.Save();
+        }).ConfigureAwait(false);
+    }
 
     public void Dispose()
     {

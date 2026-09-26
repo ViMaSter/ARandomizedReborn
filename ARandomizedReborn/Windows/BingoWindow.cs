@@ -37,6 +37,7 @@ public class BingoWindow : Window, IDisposable
 
     public void Dispose() { }
 
+
     public override void Draw()
     {
         var session = this.plugin.BingoSession;
