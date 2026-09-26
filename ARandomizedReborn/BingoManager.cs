@@ -21,7 +21,9 @@ public sealed unsafe class BingoManager : IDisposable
     private const int DescriptionValueStart = 78;
     private const int SecondChanceValueIndex = 35;
     private const int MaxSecondChancePoints = 9;
+    private const uint RewardListPanelNodeId = 62;
     private const uint RewardListNodeId = 64;
+    private const uint RewardListTitleNodeId = 63;
     private const uint SecondChanceButtonNodeId = 33;
 
     private readonly IAddonLifecycle addonLifecycle;
@@ -93,9 +95,7 @@ public sealed unsafe class BingoManager : IDisposable
         var weeklyBingo = (AddonWeeklyBingo*)addon;
         if (weeklyBingo->DutySlotList.SecondChancesRemaining != null)
             weeklyBingo->DutySlotList.SecondChancesRemaining->SetNumber(this.session.SecondChancePoints);
-        var rewardList = addon->GetNodeById(RewardListNodeId);
-        if (rewardList != null && rewardList->IsVisible())
-            rewardList->ToggleVisibility(false);
+        HideRewardList(addon);
 
         for (var index = 0; index < CellCount; index++)
         {
@@ -129,7 +129,10 @@ public sealed unsafe class BingoManager : IDisposable
 
         var addon = (AtkUnitBase*)args.Addon.Address;
         if (addon != null && addon->IsReady)
+        {
+            HideRewardList(addon);
             RewriteNativeText(addon->RootNode);
+        }
     }
 
     private void OnBonusInfoRefresh(AddonEvent type, AddonArgs args)
@@ -164,8 +167,8 @@ public sealed unsafe class BingoManager : IDisposable
         var label = button == null || button->ButtonTextNode == null
             ? string.Empty
             : button->ButtonTextNode->NodeText.ToString();
-        if (label.Contains("Retry", StringComparison.OrdinalIgnoreCase) ||
-            label.Contains("Change one check", StringComparison.OrdinalIgnoreCase))
+            if (label.Contains("Retry", StringComparison.OrdinalIgnoreCase) ||
+                label.Contains("Change one Bingo Square", StringComparison.OrdinalIgnoreCase))
         {
             receive.PreventOriginal();
             this.replaceOneIncomplete();
@@ -203,7 +206,7 @@ public sealed unsafe class BingoManager : IDisposable
                 ? string.Empty
                 : optionButton->ButtonTextNode->NodeText.ToString();
             if (label.Contains("Retry", StringComparison.OrdinalIgnoreCase) ||
-                label.Contains("Change one check", StringComparison.OrdinalIgnoreCase))
+                label.Contains("Change one Bingo Square", StringComparison.OrdinalIgnoreCase))
             {
                 receive.PreventOriginal();
                 this.replaceOneIncomplete();
@@ -236,6 +239,9 @@ public sealed unsafe class BingoManager : IDisposable
             SetString(values + DescriptionValueStart + index, cell.Definition?.Description ?? cell.CheckId);
         }
 
+        if (count > 40)
+            SetString(values + 40, "Complete a task to receive an Unlock.");
+
         if (count > SecondChanceValueIndex)
             values[SecondChanceValueIndex].SetUInt((uint)this.session.SecondChancePoints);
     }
@@ -261,10 +267,10 @@ public sealed unsafe class BingoManager : IDisposable
             return;
 
         SetString(values, $"Second Chance Points: {this.session.SecondChancePoints}/{MaxSecondChancePoints}");
-        SetString(values + 1, "Change one check (1 Point)");
-        SetString(values + 2, "Shuffle incomplete checks (2 Points)");
-        SetString(values + 4, "Replace one incomplete plugin check.");
-        SetString(values + 5, "Shuffle all incomplete plugin checks while keeping completed checks.");
+        SetString(values + 1, "Change one Bingo Square (1 Point)");
+        SetString(values + 2, "Shuffle incomplete Bingo Squares (2 Points)");
+        SetString(values + 4, "Replace one incomplete Bingo Square. Its Unlock remains available.");
+        SetString(values + 5, "Shuffle all incomplete Bingo Squares while keeping completed Bingo Squares and Unlocks.");
     }
 
     private static void RewriteBonusInfoText(AtkResNode* node, int points)
@@ -276,18 +282,23 @@ public sealed unsafe class BingoManager : IDisposable
         {
             var text = (AtkTextNode*)node;
             var current = text->NodeText.ToString();
-            if (current.Contains("Second Chance Points:", StringComparison.OrdinalIgnoreCase))
+            if (current.StartsWith("※Second Chance points can be carried over", StringComparison.OrdinalIgnoreCase))
+            {
+                node->ToggleVisibility(false);
+                return;
+            }
+            else if (current.Contains("Second Chance Points:", StringComparison.OrdinalIgnoreCase))
                 text->SetText($"Second Chance Points: {points}/{MaxSecondChancePoints}");
             else if (current.StartsWith("Retry", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Change one check (1 Point)");
+                text->SetText("Change one Bingo Square (1 Point)");
             else if (current.StartsWith("Shuffle", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Shuffle incomplete checks (2 Points)");
+                text->SetText("Shuffle incomplete Bingo Squares (2 Points)");
             else if (current.StartsWith("Restores the status", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Replace one incomplete plugin check.");
+                text->SetText("Replace one incomplete Bingo Square. Its Unlock remains available.");
             else if (current.StartsWith("Changes the location", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Shuffle all incomplete plugin checks while keeping completed checks.");
+                text->SetText("Replace all incomplete Bingo Squares while keeping completed Bingo Squares and Unlocks.");
             else if (current.StartsWith("Second Chance points can be earned", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Plugin second-chance points are used for changing or shuffling incomplete checks.");
+                text->SetText("Plugin second-chance points change or shuffle incomplete Bingo Squares.");
         }
 
         var component = (ushort)node->Type >= 1000 ? ((AtkComponentNode*)node)->Component : null;
@@ -306,15 +317,25 @@ public sealed unsafe class BingoManager : IDisposable
             var text = (AtkTextNode*)node;
             var current = text->NodeText.ToString();
             if (current.Contains("Retry", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Change one check (1 Point)");
+                text->SetText("Change one Bingo Square (1 Point)");
             else if (current.Contains("Shuffle", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Shuffle incomplete checks (2 Points)");
+                text->SetText("Shuffle incomplete Bingo Squares (2 Points)");
         }
 
         var component = (ushort)node->Type >= 1000 ? ((AtkComponentNode*)node)->Component : null;
         var firstChild = component == null ? node->ChildNode : component->UldManager.RootNode;
         for (var child = firstChild; child != null; child = child->PrevSiblingNode)
             RewriteNativeText(child);
+    }
+
+    private static void HideRewardList(AtkUnitBase* addon)
+    {
+        foreach (var nodeId in new[] { RewardListPanelNodeId, RewardListNodeId, RewardListTitleNodeId })
+        {
+            var node = addon->GetNodeById(nodeId);
+            if (node != null && node->IsVisible())
+                node->ToggleVisibility(false);
+        }
     }
 
 }
