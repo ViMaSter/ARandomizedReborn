@@ -37,6 +37,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
+    [PluginService] internal static IAddonEventManager AddonEventManager { get; private set; } = null!;
     [PluginService] internal static IAgentLifecycle AgentLifecycle { get; private set; } = null!;
     [PluginService] internal static Dalamud.Plugin.Services.IGameInventory GameInventory { get; private set; } = null!;
     [PluginService] internal static IMarketBoard MarketBoard { get; private set; } = null!;
@@ -53,6 +54,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public ObjectiveTracker ObjectiveTracker { get; init; }
     public CheckProgressTracker CheckProgressTracker { get; init; }
     public QuestTrackerManager QuestTrackerManager { get; init; }
+    public JournalManager JournalManager { get; init; }
     public BingoSession BingoSession { get; init; }
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
@@ -97,6 +99,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         QuestTrackerManager = new QuestTrackerManager(Framework, DataManager, BingoSession, CheckProgressTracker, Log);
         QuestTrackerManager.SetEnabled(Configuration.EnableRandomizer);
+
+        JournalManager = new JournalManager(Framework, GameGui, AddonLifecycle, AddonEventManager, BingoSession, CheckProgressTracker);
+        JournalManager.SetEnabled(Configuration.EnableRandomizer);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
@@ -156,6 +161,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         DebugWindow.Dispose();
         SprintBlocker.Dispose();
         ObjectiveTracker.Dispose();
+        JournalManager.Dispose();
         QuestTrackerManager.Dispose();
         CheckProgressTracker.Dispose();
         BingoSession.Dispose();
@@ -255,6 +261,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ObjectiveTracker.SetEnabled(enabled);
         CheckProgressTracker.SetEnabled(enabled);
         QuestTrackerManager.SetEnabled(enabled);
+        JournalManager.SetEnabled(enabled);
         InteractionRestrictionManager.SetEnabled(enabled);
         UiRestrictionManager.SetEnabled(enabled);
         AgentRestrictionManager.SetEnabled(enabled);

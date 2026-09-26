@@ -68,8 +68,9 @@ public sealed class BingoSession : IDisposable
     public IReadOnlyList<CheckDefinition> GetNextChecks(CheckProgressTracker progress, int count)
     {
         return this.Cells.Select((cell, index) => (cell, index))
-            .Where(entry => !entry.cell.IsComplete && entry.cell.Definition != null)
-            .OrderBy(entry => UnlockDepth(entry.cell, []))
+            .Where(entry => !entry.cell.IsComplete && entry.cell.Definition != null && this.GetJournalPreference(entry.cell.CheckId) != 2)
+            .OrderByDescending(entry => this.GetJournalPreference(entry.cell.CheckId) == 1)
+            .ThenBy(entry => UnlockDepth(entry.cell, []))
             .ThenBy(entry => entry.cell.Definition!.Steps.Count(step => !progress.IsStepSatisfied(entry.cell.CheckId, step)))
             .ThenBy(entry => BingoBoard.Lines.Where(line => line.Contains(entry.index))
                 .Min(line => line.Count(index => !this.Cells[index].IsComplete)))
@@ -94,6 +95,19 @@ public sealed class BingoSession : IDisposable
             var prerequisite = this.Cells.FirstOrDefault(other => other.Reward == required);
             return prerequisite == null ? int.MaxValue / 2 : 1 + UnlockDepth(prerequisite, visited);
         }
+    }
+
+    public int GetJournalPreference(string checkId)
+        => this.configuration.JournalCheckPreferences.GetValueOrDefault(checkId);
+
+    public void CycleJournalPreference(string checkId)
+    {
+        var next = (this.GetJournalPreference(checkId) + 1) % 3;
+        if (next == 0)
+            this.configuration.JournalCheckPreferences.Remove(checkId);
+        else
+            this.configuration.JournalCheckPreferences[checkId] = next;
+        this.configuration.Save();
     }
 
     /// <summary>Generates a new board off the main thread, then locks everything and applies it.</summary>

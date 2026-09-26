@@ -27,6 +27,20 @@ public sealed record CheckDefinition(
     public bool IsFullyAutomatic => this.Steps.All(step => step.Automatic);
 
     public IReadOnlyList<BreakingRule> Breaks => this.BreakingRules ?? [];
+
+    public uint JournalIconId => this.Id switch
+    {
+        "gather-time-restricted-fish" => 62118,
+        "gather-five-ores" => 62116,
+        "gather-three-zones" => 62117,
+        "craft-and-eat-food" => 62115,
+        _ => this.RequiredUnlock switch
+        {
+            UnlockKey.Gatherers => 62117,
+            UnlockKey.Crafters => 62115,
+            _ => 71205,
+        },
+    };
 }
 
 public static class Checks

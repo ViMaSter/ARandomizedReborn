@@ -32,6 +32,7 @@ public class Configuration : IPluginConfiguration
     public List<BingoCell> BingoBoard { get; set; } = [];
     public HashSet<string> CompletedChecks { get; set; } = [];
     public HashSet<string> ManuallyCompletedChecks { get; set; } = [];
+    public Dictionary<string, int> JournalCheckPreferences { get; set; } = [];
     public HashSet<string> EverTriggeredChecks { get; set; } = [];
     public Dictionary<string, Dictionary<string, int>> CheckStepProgress { get; set; } = [];
     public bool BingoWon { get; set; } = false;
