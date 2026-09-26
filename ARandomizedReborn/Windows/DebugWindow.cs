@@ -2,6 +2,8 @@ using System;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
+using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
@@ -17,6 +19,12 @@ public class DebugWindow : Window, IDisposable
     private readonly Plugin plugin;
     private bool onlyBoardChecks;
     private bool hideCompleted;
+    private string addonTreeName = "Journal";
+    private string addonTreeAddress = string.Empty;
+    private string addonTreeAgent = string.Empty;
+    private string addonTreeAgentAddress = string.Empty;
+    private int addonTreePort;
+    private string? addonTreeError;
 
     public DebugWindow(Plugin plugin)
         : base("A Randomized Reborn - Debug###ARandomizedRebornDebug")
@@ -45,6 +53,51 @@ public class DebugWindow : Window, IDisposable
 
         if (ImGui.Button("Reset progress (keep board)"))
             this.plugin.ResetProgress();
+
+        ImGui.Separator();
+        ImGui.TextUnformatted("Addon tree JSON (localhost only)");
+        ImGui.InputText("Addon name", ref this.addonTreeName, 32);
+        ImGui.InputText("Addon address (hex, optional)", ref this.addonTreeAddress, 24);
+        ImGui.InputText("Agent name (optional)", ref this.addonTreeAgent, 48);
+        ImGui.InputText("Agent address (hex, optional)", ref this.addonTreeAgentAddress, 24);
+        using (ImRaii.Disabled(this.plugin.AddonTreeServer.Port != null))
+            ImGui.InputInt("Port (0 = automatic)", ref this.addonTreePort);
+        if (this.plugin.AddonTreeServer.Port == null)
+        {
+            if (ImGui.Button("Start addon tree server"))
+            {
+                try
+                {
+                    this.plugin.AddonTreeServer.Start(this.addonTreePort is >= 0 and <= 65535 ? this.addonTreePort : 0);
+                    this.addonTreeError = null;
+                }
+                catch (Exception exception)
+                {
+                    this.addonTreeError = exception.Message;
+                }
+            }
+        }
+        else
+        {
+            if (ImGui.Button("Stop addon tree server"))
+                this.plugin.AddonTreeServer.Stop();
+            var url = $"http://127.0.0.1:{this.plugin.AddonTreeServer.Port}/addon?name={Uri.EscapeDataString(this.addonTreeName)}";
+            if (!string.IsNullOrWhiteSpace(this.addonTreeAddress))
+                url += $"&address={Uri.EscapeDataString(this.addonTreeAddress.Trim())}";
+            if (!string.IsNullOrWhiteSpace(this.addonTreeAgent))
+                url += $"&agent={Uri.EscapeDataString(this.addonTreeAgent.Trim())}";
+            if (!string.IsNullOrWhiteSpace(this.addonTreeAgentAddress))
+                url += $"&agentAddress={Uri.EscapeDataString(this.addonTreeAgentAddress.Trim())}";
+            ImGui.TextWrapped(url);
+            ImGui.SameLine();
+            if (ImGuiComponents.IconButton("##copy-addon-tree-url", FontAwesomeIcon.Copy))
+                ImGui.SetClipboardText(url);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Copy addon tree URL");
+        }
+
+        if (this.addonTreeError != null)
+            ImGui.TextColored(LockedColor, this.addonTreeError);
 
         ImGui.Separator();
 

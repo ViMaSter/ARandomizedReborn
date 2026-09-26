@@ -55,6 +55,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public CheckProgressTracker CheckProgressTracker { get; init; }
     public QuestTrackerManager QuestTrackerManager { get; init; }
     public JournalManager JournalManager { get; init; }
+    public AddonTreeServer AddonTreeServer { get; init; }
     public BingoSession BingoSession { get; init; }
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
@@ -102,6 +103,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         JournalManager = new JournalManager(Framework, GameGui, AddonLifecycle, AddonEventManager, BingoSession, CheckProgressTracker);
         JournalManager.SetEnabled(Configuration.EnableRandomizer);
+
+        AddonTreeServer = new AddonTreeServer(Framework, GameGui, Log);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
@@ -162,6 +165,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         SprintBlocker.Dispose();
         ObjectiveTracker.Dispose();
         JournalManager.Dispose();
+        AddonTreeServer.Dispose();
         QuestTrackerManager.Dispose();
         CheckProgressTracker.Dispose();
         BingoSession.Dispose();
