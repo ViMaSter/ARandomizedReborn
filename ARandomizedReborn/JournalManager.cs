@@ -66,9 +66,12 @@ public sealed unsafe class JournalManager : IDisposable
     private readonly IAddonLifecycle addonLifecycle;
     private readonly IAgentLifecycle agentLifecycle;
     private readonly BingoSession session;
+    private readonly Configuration configuration;
     private readonly CheckProgressTracker progress;
     private readonly ushort completedColor;
     private readonly Dictionary<string, nint> pinnedStrings = [];
+    private readonly Dictionary<nint, string> pinnedTexts = [];
+    private readonly HashSet<string> collapsedGroups = [];
     private readonly AtkValue* detailValues;
     private readonly Dictionary<int, (nint Pointer, int Capacity)> detailStrings = [];
     private uint lastRealQuestId;
@@ -76,13 +79,14 @@ public sealed unsafe class JournalManager : IDisposable
     private bool enabled;
     private bool showingCompleted;
     private string? selectedCheckId;
-    private int? clickedCellIndex;
+    private int? clickedCheckId;
 
-    public JournalManager(IGameGui gameGui, IAddonLifecycle addonLifecycle, IAgentLifecycle agentLifecycle, IDataManager dataManager, BingoSession session, CheckProgressTracker progress)
+    public JournalManager(IGameGui gameGui, IAddonLifecycle addonLifecycle, IAgentLifecycle agentLifecycle, IDataManager dataManager, Configuration configuration, BingoSession session, CheckProgressTracker progress)
     {
         this.gameGui = gameGui;
         this.addonLifecycle = addonLifecycle;
         this.agentLifecycle = agentLifecycle;
+        this.configuration = configuration;
         this.session = session;
         this.progress = progress;
         this.completedColor = QuestTrackerManager.FindCompletedColor(dataManager);
@@ -92,7 +96,7 @@ public sealed unsafe class JournalManager : IDisposable
         this.listValues = (AtkValue*)Marshal.AllocHGlobal(MaxListRows * (ListUIntsPerItem + ListStringsPerItem) * sizeof(AtkValue));
     }
 
-    private bool IsOvertaking => this.enabled && this.session.HasBoard;
+    private bool IsOvertaking => this.enabled && (this.session.HasBoard || this.configuration.JournalShowAllChecks);
 
     public void SetEnabled(bool enabled)
     {
@@ -136,7 +140,7 @@ public sealed unsafe class JournalManager : IDisposable
 
     private enum RowKind { Group, Section, Leaf }
 
-    private sealed record Row(RowKind Kind, uint Value0, uint Icon, uint QuestType, string Text, string Extra, BingoCell? Cell);
+    private sealed record Row(RowKind Kind, uint Value0, uint Icon, uint QuestType, string Text, string Extra, CheckDefinition? Check, bool Trackable = false);
 
     private static RowKind KindOf(AtkComponentTreeListItem* item)
         => item->Type.HasFlag(TreeListItemType.Group) ? RowKind.Group
@@ -155,56 +159,74 @@ public sealed unsafe class JournalManager : IDisposable
                header->NodeText.ToString() == label.String.ToString();
     }
 
+    private bool IsComplete(CheckDefinition check)
+        => this.configuration.CompletedChecks.Contains(check.Id) || this.session.Cells.Any(cell => cell.CheckId == check.Id && cell.IsComplete);
+
+    private CheckDefinition? SelectedCheck => this.selectedCheckId == null ? null : Checks.Find(this.selectedCheckId);
+
+    private static CheckDefinition? CheckFromFakeId(int id)
+    {
+        var index = id - FakeIdBase;
+        return index >= 0 && index < Checks.Definitions.Count ? Checks.Definitions[index] : null;
+    }
+
     private List<Row> BuildRows(bool completed)
     {
-        var cells = this.session.Cells
-            .Select((cell, index) => (cell, index))
-            .Where(entry => entry.cell.Definition != null && entry.cell.IsComplete == completed)
-            .ToArray();
+        var rows = new List<Row>();
+        var board = this.session.Cells.Select(cell => cell.Definition).OfType<CheckDefinition>().ToArray();
+        if (board.Length > 0)
+            AddGroup(completed ? "Completed Bingo Squares" : "Bingo Squares", board, true);
 
-        var rows = new List<Row>
+        // Debug option: every other defined check gets its own group.
+        if (this.configuration.JournalShowAllChecks)
         {
-            new(RowKind.Group, GroupHeaderValue, 0, 0, completed ? "Completed Bingo Squares" : "Bingo Squares",
-                $"{cells.Length}/{this.session.Cells.Count}", null),
-        };
-
-        var groups = completed
-            ? cells.GroupBy(entry => entry.cell.Definition!.JournalArea)
-                .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(group => (Heading: group.Key, Entries: group.AsEnumerable()))
-            : cells.GroupBy(entry => entry.cell.RequiredUnlock)
-                .OrderBy(group => group.Key.HasValue ? (int)group.Key.Value : -1)
-                .Select(group => (Heading: group.Key is { } key
-                    ? Unlocks.Definitions.First(definition => definition.Key == key).DisplayName
-                    : "No unlock required", Entries: group.AsEnumerable()));
-
-        foreach (var (heading, entries) in groups)
-        {
-            rows.Add(new(RowKind.Section, SectionHeaderValue, 0, 0, heading, string.Empty, null));
-            foreach (var (cell, index) in entries.OrderBy(entry => entry.cell.Definition!.DisplayName, StringComparer.OrdinalIgnoreCase))
-            {
-                rows.Add(new(RowKind.Leaf, ((uint)(FakeIdBase + index) << 16) | LeafFlags, cell.Definition!.JournalIcon, 1,
-                    cell.Definition.DisplayName, LevelText, cell));
-            }
+            var offBoard = Checks.Definitions.Where(check => !board.Contains(check)).ToArray();
+            AddGroup(completed ? "Completed checks not on the board" : "Checks not on the board", offBoard, false);
         }
 
-        var last = rows.FindLastIndex(row => row.Cell != null);
-        if (last >= 0)
-            rows[last] = rows[last] with { Value0 = rows[last].Value0 | (uint)TreeListItemType.LastItemInGroup };
-
-        if (!rows.Any(row => row.Cell?.CheckId == this.selectedCheckId))
-            this.selectedCheckId = rows.FirstOrDefault(row => row.Cell != null)?.Cell!.CheckId;
+        if (!rows.Any(row => row.Check?.Id == this.selectedCheckId))
+            this.selectedCheckId = rows.FirstOrDefault(row => row.Check != null)?.Check!.Id;
 
         return rows;
+
+        void AddGroup(string title, CheckDefinition[] scope, bool trackable)
+        {
+            var checks = scope.Where(check => this.IsComplete(check) == completed).ToArray();
+            rows.Add(new(RowKind.Group, GroupHeaderValue, 0, 0, title, $"{checks.Length}/{scope.Length}", null));
+
+            var sections = completed
+                ? checks.GroupBy(check => check.JournalArea)
+                    .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => (Heading: group.Key, Entries: group.AsEnumerable()))
+                : checks.GroupBy(check => check.RequiredUnlock)
+                    .OrderBy(group => group.Key.HasValue ? (int)group.Key.Value : -1)
+                    .Select(group => (Heading: group.Key is { } key
+                        ? Unlocks.Definitions.First(definition => definition.Key == key).DisplayName
+                        : "No unlock required", Entries: group.AsEnumerable()));
+
+            foreach (var (heading, entries) in sections)
+            {
+                rows.Add(new(RowKind.Section, SectionHeaderValue, 0, 0, heading, string.Empty, null));
+                foreach (var check in entries.OrderBy(check => check.DisplayName, StringComparer.OrdinalIgnoreCase))
+                {
+                    var id = FakeIdBase + Checks.Definitions.ToList().IndexOf(check);
+                    rows.Add(new(RowKind.Leaf, ((uint)id << 16) | LeafFlags, check.JournalIcon, 1, check.DisplayName, LevelText, check, trackable && !completed));
+                }
+            }
+
+            var last = rows.FindLastIndex(row => row.Check != null);
+            if (last >= 0 && rows[last].Kind == RowKind.Leaf && rows.FindLastIndex(row => row.Kind == RowKind.Group) < last)
+                rows[last] = rows[last] with { Value0 = rows[last].Value0 | (uint)TreeListItemType.LastItemInGroup };
+        }
     }
 
     private uint TrackingState(Row row, bool completed)
-        => row.Cell == null || completed ? 0u : (uint)this.session.GetJournalPreference(row.Cell.CheckId);
+        => row.Check == null || !row.Trackable ? 0u : (uint)this.session.GetJournalPreference(row.Check.Id);
 
     private void OnJournalUpdate(AddonEvent type, AddonArgs args)
     {
         if (type == AddonEvent.PreDraw)
-            this.clickedCellIndex = null;
+            this.clickedCheckId = null;
 
         if (!this.IsOvertaking)
             return;
@@ -217,6 +239,7 @@ public sealed unsafe class JournalManager : IDisposable
         var completed = ShowingCompleted(addon);
         this.showingCompleted = completed;
         var rows = this.BuildRows(completed);
+        this.RememberCollapsedGroups(list);
         if (!this.Matches(list, rows, completed))
             this.Write(list, rows, completed);
 
@@ -240,6 +263,22 @@ public sealed unsafe class JournalManager : IDisposable
                 owner->SetPositionFloat(owner->X, fullArea->Y);
                 ((AtkComponentList*)list)->SetSize(owner->Width, fullArea->Height);
             }
+        }
+    }
+
+    private void RememberCollapsedGroups(AtkComponentTreeList* list)
+    {
+        for (var index = 0; index < list->Items.Count; index++)
+        {
+            var item = list->Items[index].Value;
+            if (item == null || KindOf(item) != RowKind.Group || item->StringValues.Count == 0 ||
+                !this.pinnedTexts.TryGetValue((nint)item->StringValues[0].Value, out var title))
+                continue;
+
+            if (item->State.HasFlag(TreeListItemState.Expanded))
+                this.collapsedGroups.Remove(title);
+            else
+                this.collapsedGroups.Add(title);
         }
     }
 
@@ -285,14 +324,26 @@ public sealed unsafe class JournalManager : IDisposable
         list->LoadAtkValues(stringOffset + (count * ListStringsPerItem), values, 0, stringOffset, ListUIntsPerItem, ListStringsPerItem, count,
             ((AtkComponentList*)list)->CallBackInterface);
 
+        // Keep groups the player collapsed collapsed across rebuilds.
+        var collapsed = false;
         for (var index = 0; index < count && index < list->Items.Count; index++)
         {
             var item = list->Items[index].Value;
-            if (item != null && rows[index].Kind == RowKind.Group)
-                item->State |= TreeListItemState.Expanded;
+            if (item == null)
+                continue;
+
+            if (rows[index].Kind == RowKind.Group)
+            {
+                collapsed = this.collapsedGroups.Contains(rows[index].Text);
+                item->State = collapsed ? item->State & ~TreeListItemState.Expanded : item->State | TreeListItemState.Expanded;
+            }
+            else
+            {
+                item->IsHidden = collapsed;
+            }
         }
 
-        var selected = rows.FindIndex(row => row.Cell != null && row.Cell.CheckId == this.selectedCheckId);
+        var selected = rows.FindIndex(row => row.Check != null && row.Check.Id == this.selectedCheckId);
         ((AtkComponentList*)list)->SelectedItemIndex = selected;
         list->LayoutRefreshPending = true;
 
@@ -332,9 +383,9 @@ public sealed unsafe class JournalManager : IDisposable
             if (buttonNode == null || (ushort)buttonNode->Type < 1000)
                 continue;
 
-            SetVisible(buttonNode, !completed);
+            SetVisible(buttonNode, rows[index].Trackable);
             var button = ((AtkComponentNode*)buttonNode)->Component;
-            if (completed || button == null)
+            if (!rows[index].Trackable || button == null)
                 continue;
 
             var state = this.TrackingState(rows[index], completed);
@@ -360,11 +411,11 @@ public sealed unsafe class JournalManager : IDisposable
         if (data->ListItem == null || data->ListItem->UIntValues.Count == 0)
             return;
 
-        var cellIndex = (int)(data->ListItem->UIntValues[0] >> 16) - FakeIdBase;
-        if (cellIndex < 0 || cellIndex >= this.session.Cells.Count)
+        var id = (int)(data->ListItem->UIntValues[0] >> 16);
+        if (CheckFromFakeId(id) == null)
             return;
 
-        this.clickedCellIndex = cellIndex;
+        this.clickedCheckId = id;
 
         // Our rows have no map, context menu or chat link to offer.
         if (data->MouseButtonId != 0 || (AtkEventType)receive.AtkEventType == AtkEventType.ListItemDoubleClick)
@@ -388,25 +439,25 @@ public sealed unsafe class JournalManager : IDisposable
             _ => -1,
         };
 
-        var cellIndex = id - FakeIdBase;
-        if (cellIndex < 0 || cellIndex >= this.session.Cells.Count)
+        var check = CheckFromFakeId(id);
+        if (check == null)
         {
-            if (this.clickedCellIndex is not { } clicked)
+            if (this.clickedCheckId is not { } clicked)
                 return;
-            cellIndex = clicked;
+            check = CheckFromFakeId(clicked)!;
         }
 
         receive.PreventOriginal();
-        this.clickedCellIndex = null;
-        var cell = this.session.Cells[cellIndex];
+        this.clickedCheckId = null;
         if (kind == AgentSetTrackingState)
         {
-            if (!cell.IsComplete && receive.ValueCount >= 4 && values[3].Type == AtkValueType.Int)
-                this.session.SetJournalPreference(cell.CheckId, values[3].Int);
+            if (!this.IsComplete(check) && this.session.Cells.Any(cell => cell.CheckId == check.Id) &&
+                receive.ValueCount >= 4 && values[3].Type == AtkValueType.Int)
+                this.session.SetJournalPreference(check.Id, values[3].Int);
             return;
         }
 
-        this.selectedCheckId = cell.CheckId;
+        this.selectedCheckId = check.Id;
         this.RefreshDetail();
     }
 
@@ -435,7 +486,7 @@ public sealed unsafe class JournalManager : IDisposable
     /// <summary>Writes title and level straight into their nodes in case the addon hides them for non-quest data.</summary>
     private void ApplyDetailHeader(AtkUnitBase* addon)
     {
-        var definition = this.session.Cells.FirstOrDefault(entry => entry.CheckId == this.selectedCheckId)?.Definition;
+        var definition = this.SelectedCheck;
         var title = addon->GetTextNodeById(DetailTitleNodeId);
         if (title != null)
         {
@@ -493,8 +544,7 @@ public sealed unsafe class JournalManager : IDisposable
             values[index].UInt64 = 0;
         }
 
-        var cell = this.session.Cells.FirstOrDefault(entry => entry.CheckId == this.selectedCheckId);
-        var definition = cell?.Definition;
+        var definition = this.SelectedCheck;
 
         values[0].SetUInt(1);
         values[1].SetUInt(0);
@@ -515,7 +565,7 @@ public sealed unsafe class JournalManager : IDisposable
         values[135].SetUInt(0); // completion bonus count
         SetString(136, string.Empty);
 
-        var objectives = cell == null ? [] : this.GetObjectives(cell);
+        var objectives = definition == null ? [] : this.GetObjectives(definition);
         values[DetailObjectiveCount].SetUInt((uint)objectives.Count);
         for (var index = 0; index < objectives.Count; index++)
             SetEncoded(DetailObjectiveStart + index, objectives[index]);
@@ -559,17 +609,17 @@ public sealed unsafe class JournalManager : IDisposable
         }
     }
 
-    private List<byte[]> GetObjectives(BingoCell cell)
+    private List<byte[]> GetObjectives(CheckDefinition definition)
     {
-        var definition = cell.Definition!;
+        var complete = this.IsComplete(definition);
         var result = new List<byte[]>();
         foreach (var step in definition.Steps.Take(DetailMaxObjectives))
         {
-            var done = cell.IsComplete || this.progress.IsStepSatisfied(definition.Id, step);
+            var done = complete || this.progress.IsStepSatisfied(definition.Id, step);
             var text = definition.Id == "fill-armory-category" && !done && this.progress.GetFullestArmoryCategory() is { } armory
                 ? $"Fill {armory.Name}: {armory.Filled}/{armory.Capacity}"
                 : step.Kind == ProgressStepKind.Counter
-                    ? $"{step.Label} ({(cell.IsComplete ? this.progress.GetTarget(definition.Id, step) : this.progress.GetValue(definition.Id, step.Id))}/{this.progress.GetTarget(definition.Id, step)})"
+                    ? $"{step.Label} ({(complete ? this.progress.GetTarget(definition.Id, step) : this.progress.GetValue(definition.Id, step.Id))}/{this.progress.GetTarget(definition.Id, step)})"
                     : step.Label;
 
             var builder = new SeStringBuilder();
@@ -594,6 +644,7 @@ public sealed unsafe class JournalManager : IDisposable
         Marshal.Copy(bytes, 0, pointer, bytes.Length);
         Marshal.WriteByte(pointer, bytes.Length, 0);
         this.pinnedStrings[text] = pointer;
+        this.pinnedTexts[pointer] = text;
         return pointer;
     }
 

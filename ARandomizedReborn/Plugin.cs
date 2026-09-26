@@ -101,7 +101,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         QuestTrackerManager = new QuestTrackerManager(Framework, DataManager, BingoSession, CheckProgressTracker, Log);
         QuestTrackerManager.SetEnabled(Configuration.EnableRandomizer);
 
-        JournalManager = new JournalManager(GameGui, AddonLifecycle, AgentLifecycle, DataManager, BingoSession, CheckProgressTracker);
+        JournalManager = new JournalManager(GameGui, AddonLifecycle, AgentLifecycle, DataManager, Configuration, BingoSession, CheckProgressTracker);
         JournalManager.SetEnabled(Configuration.EnableRandomizer);
 
         AddonTreeServer = new AddonTreeServer(Framework, GameGui, Log);

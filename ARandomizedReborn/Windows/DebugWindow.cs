@@ -51,6 +51,13 @@ public class DebugWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.Checkbox("Hide completed", ref this.hideCompleted);
 
+        var showAllInJournal = this.plugin.Configuration.JournalShowAllChecks;
+        if (ImGui.Checkbox("Show all checks in Journal (not just board)", ref showAllInJournal))
+        {
+            this.plugin.Configuration.JournalShowAllChecks = showAllInJournal;
+            this.plugin.Configuration.Save();
+        }
+
         if (ImGui.Button("Reset progress (keep board)"))
             this.plugin.ResetProgress();
 
