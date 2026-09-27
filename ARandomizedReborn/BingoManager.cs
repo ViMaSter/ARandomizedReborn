@@ -52,6 +52,12 @@ public sealed unsafe class BingoManager : IDisposable
     private const uint RewardListPanelNodeId = 62;
     private const uint RewardListTitleNodeId = 63;
     private const uint SecondChanceButtonNodeId = 33;
+    private const uint CancelSelectionNodeId = 28;
+    private const uint BonusInfoChangeOneNodeId = 4;
+    private const uint BonusInfoShuffleNodeId = 5;
+    private const uint BonusInfoTitleNodeId = 2;
+    private const uint BonusInfoDescriptionNodeId = 3;
+    private const uint NormalModeValue = 1; // AtkValue 0 of WeeklyBingo; 4 is the second-chance square selection
     private const uint MenuNodeIdBase = 0x52420000;
     private const uint CheckNodeIdBase = 0x52430000;
     private const uint CheckIconId = 60081;
@@ -80,6 +86,7 @@ public sealed unsafe class BingoManager : IDisposable
     private bool enabled;
     private bool openedByPlugin;
     private bool showingSessionChooser;
+    private bool selectingReplacement;
     private BingoDifficulty selectedDifficulty = BingoDifficulty.Medium;
     private Action? pendingConfirm;
     private uint confirmAddonId;
@@ -318,6 +325,7 @@ public sealed unsafe class BingoManager : IDisposable
     {
         this.DestroyMenu();
         this.showingSessionChooser = false;
+        this.selectingReplacement = false;
         this.openedByPlugin = false;
         if (this.pendingConfirm != null)
             CloseConfirmDialog(this.confirmAddonId);
@@ -453,6 +461,12 @@ public sealed unsafe class BingoManager : IDisposable
         if (!this.session.HasBoard || index < 0 || index >= CellCount || this.session.Cells[index].IsComplete)
             return;
 
+        if (this.selectingReplacement)
+        {
+            this.ReplaceSelectedCell(index);
+            return;
+        }
+
         var checkId = this.session.Cells[index].CheckId;
         this.Confirm(
             $"If the detection didn't work, this would complete \"{Checks.DisplayName(checkId)}\" and grant \"{UnlockName(this.session.Cells[index].Reward)}\".\nAre you sure?",
@@ -472,6 +486,9 @@ public sealed unsafe class BingoManager : IDisposable
 
         if (!this.session.HasBoard)
             return "No board yet. Pick a difficulty on the right to roll one.";
+
+        if (this.selectingReplacement)
+            return "Click an incomplete square to replace it with a new one (1 Point).";
 
         var intro = this.session.HasWon ? "BINGO! You win - keep going for the rest." : "Complete a square to receive its Unlock.";
         return $"{intro}\nClick a square to mark it complete if automatic detection missed it.";
@@ -1014,6 +1031,18 @@ public sealed unsafe class BingoManager : IDisposable
 
         this.WriteBonusInfoValues(addon->AtkValues, (int)addon->AtkValuesCount);
         RewriteBonusInfoText(addon->RootNode, this.session.SecondChancePoints);
+        SetBonusInfoButton(addon, BonusInfoChangeOneNodeId, "Change one Bingo Square (1 Point)", "Click an incomplete Bingo Square to replace it. Its Unlock remains available.");
+        SetBonusInfoButton(addon, BonusInfoShuffleNodeId, "Shuffle incomplete Bingo Squares (2 Points)", "Replace all incomplete Bingo Squares while keeping completed Bingo Squares and Unlocks.");
+    }
+
+    private static void SetBonusInfoButton(AtkUnitBase* addon, uint nodeId, string title, string description)
+    {
+        var node = (AtkComponentNode*)addon->GetNodeById(nodeId);
+        if (node == null || node->Component == null)
+            return;
+
+        SetText(node->Component->UldManager.SearchNodeById(BonusInfoTitleNodeId), title);
+        SetText(node->Component->UldManager.SearchNodeById(BonusInfoDescriptionNodeId), description);
     }
 
     private void OnBonusInfoReceiveEvent(AddonEvent type, AddonArgs args)
@@ -1023,20 +1052,51 @@ public sealed unsafe class BingoManager : IDisposable
             return;
 
         var target = ((AtkEvent*)receive.AtkEvent)->Target;
-        var button = (AtkComponentButton*)target;
-        var label = button == null || button->ButtonTextNode == null
-            ? string.Empty
-            : button->ButtonTextNode->NodeText.ToString();
-            if (label.Contains("Retry", StringComparison.OrdinalIgnoreCase) ||
-                label.Contains("Change one Bingo Square", StringComparison.OrdinalIgnoreCase))
+        var buttonNodeId = ButtonNodeId((AtkUnitBase*)args.Addon.Address, target);
+        if (buttonNodeId == BonusInfoChangeOneNodeId)
         {
-            receive.PreventOriginal();
-            this.ReplaceOneIncomplete();
+            // Let the game switch the board into its square selection mode; the pick is handled in OnCellClick.
+            if (this.session.SecondChancePoints < 1)
+            {
+                receive.PreventOriginal();
+                Plugin.ToastGui.ShowError("Not enough Second Chance Points (1 needed).");
+            }
+            else if (!this.session.Cells.Any(cell => !cell.IsComplete))
+            {
+                receive.PreventOriginal();
+            }
+            else
+            {
+                this.selectingReplacement = true;
+            }
         }
-        else if (label.Contains("Shuffle", StringComparison.OrdinalIgnoreCase))
+        else if (buttonNodeId == BonusInfoShuffleNodeId)
         {
             receive.PreventOriginal();
-            this.plugin.ShuffleIncomplete(this.session.Difficulty);
+            if (this.session.SecondChancePoints < 2)
+            {
+                Plugin.ToastGui.ShowError("Not enough Second Chance Points (2 needed).");
+                return;
+            }
+
+            if (this.session.IsGenerating)
+                return;
+
+            this.Confirm(
+                $"Shuffle all incomplete Bingo Squares? Completed squares and Unlocks are kept.\nThis costs 2 Second Chance Points ({this.session.SecondChancePoints} left).\nAre you sure?",
+                () =>
+                {
+                    this.plugin.ShuffleIncomplete(this.session.Difficulty);
+                    var bonusInfo = RaptureAtkUnitManager.Instance()->GetAddonByName(BonusInfoAddonName);
+                    // Close like its X button (callback [0, undefined]); a plain Close leaves the agent thinking it is still open.
+                    if (bonusInfo != null)
+                    {
+                        var values = stackalloc AtkValue[2];
+                        values[0].SetInt(0);
+                        values[1].Type = AtkValueType.Undefined;
+                        bonusInfo->FireCallback(2, values);
+                    }
+                });
         }
     }
 
@@ -1046,49 +1106,44 @@ public sealed unsafe class BingoManager : IDisposable
             (AtkEventType)receive.AtkEventType != AtkEventType.ButtonClick || receive.AtkEvent == 0)
             return;
 
-        var addon = (AtkUnitBase*)args.Addon.Address;
-        var weeklyBingo = (AddonWeeklyBingo*)addon;
-        var button = weeklyBingo->DutySlotList.SecondChanceButton;
-        var atkEvent = (AtkEvent*)receive.AtkEvent;
-        var target = atkEvent->Target;
-        var eventNode = atkEvent->Node;
-        var targetNode = (AtkResNode*)target;
-        var isSecondChance = button != null &&
-                             (target == (AtkEventTarget*)button ||
-                              target == (AtkEventTarget*)button->OwnerNode ||
-                              eventNode == button->OwnerNode ||
-                              (targetNode != null && targetNode->NodeId == SecondChanceButtonNodeId) ||
-                              (eventNode != null && eventNode->NodeId == SecondChanceButtonNodeId));
-        if (!isSecondChance)
-        {
-            var optionButton = (AtkComponentButton*)target;
-            var label = optionButton == null || optionButton->ButtonTextNode == null
-                ? string.Empty
-                : optionButton->ButtonTextNode->NodeText.ToString();
-            if (label.Contains("Retry", StringComparison.OrdinalIgnoreCase) ||
-                label.Contains("Change one Bingo Square", StringComparison.OrdinalIgnoreCase))
-            {
-                receive.PreventOriginal();
-                this.ReplaceOneIncomplete();
-            }
-            else if (label.Contains("Shuffle", StringComparison.OrdinalIgnoreCase))
-            {
-                receive.PreventOriginal();
-                this.plugin.ShuffleIncomplete(this.session.Difficulty);
-            }
-
-            return;
-        }
-
-        // Let the game create its native second-chance window. Its option events are
-        // intercepted above and routed to the randomized board instead of Khloe's book.
+        // Cancel leaves the selection mode and returns to the second-chance window.
+        var target = ((AtkEvent*)receive.AtkEvent)->Target;
+        if (ButtonNodeId((AtkUnitBase*)args.Addon.Address, target) == CancelSelectionNodeId)
+            this.selectingReplacement = false;
     }
 
-    private void ReplaceOneIncomplete()
+    /// <summary>Node id of the addon's button component node an event targets (the node or its component), else 0.</summary>
+    private static uint ButtonNodeId(AtkUnitBase* addon, AtkEventTarget* target)
     {
-        var index = this.session.Cells.ToList().FindIndex(cell => !cell.IsComplete);
-        if (index >= 0)
-            this.session.ReplaceIncompleteCell(index);
+        if (addon == null || target == null)
+            return 0;
+
+        for (var index = 0; index < addon->UldManager.NodeListCount; index++)
+        {
+            var node = addon->UldManager.NodeList[index];
+            if (node == null || (ushort)node->Type < 1000)
+                continue;
+
+            var component = ((AtkComponentNode*)node)->Component;
+            if (component != null && ((AtkEventTarget*)node == target || (AtkEventTarget*)component == target) &&
+                component->GetComponentType() == ComponentType.Button)
+                return node->NodeId;
+        }
+
+        return 0;
+    }
+
+    private void ReplaceSelectedCell(int index)
+    {
+        this.selectingReplacement = false;
+        this.session.ReplaceIncompleteCell(index);
+
+        // Leave the native selection mode the same way the book refreshes into its normal state.
+        var addon = (AtkUnitBase*)this.menuAddon;
+        if (addon == null || addon->AtkValues == null || addon->AtkValuesCount == 0)
+            return;
+        addon->AtkValues[0].SetUInt(NormalModeValue);
+        addon->OnRefresh(addon->AtkValuesCount, addon->AtkValues);
     }
 
     private void WriteValues(AtkValue* values, int count)
@@ -1140,7 +1195,7 @@ public sealed unsafe class BingoManager : IDisposable
         SetString(values, $"Second Chance Points: {this.session.SecondChancePoints}/{MaxSecondChancePoints}");
         SetString(values + 1, "Change one Bingo Square (1 Point)");
         SetString(values + 2, "Shuffle incomplete Bingo Squares (2 Points)");
-        SetString(values + 4, "Replace one incomplete Bingo Square. Its Unlock remains available.");
+        SetString(values + 4, "Click an incomplete Bingo Square to replace it. Its Unlock remains available.");
         SetString(values + 5, "Shuffle all incomplete Bingo Squares while keeping completed Bingo Squares and Unlocks.");
     }
 
@@ -1160,14 +1215,6 @@ public sealed unsafe class BingoManager : IDisposable
             }
             else if (current.Contains("Second Chance Points:", StringComparison.OrdinalIgnoreCase))
                 text->SetText($"Second Chance Points: {points}/{MaxSecondChancePoints}");
-            else if (current.StartsWith("Retry", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Change one Bingo Square (1 Point)");
-            else if (current.StartsWith("Shuffle", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Shuffle incomplete Bingo Squares (2 Points)");
-            else if (current.StartsWith("Restores the status", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Replace one incomplete Bingo Square. Its Unlock remains available.");
-            else if (current.StartsWith("Changes the location", StringComparison.OrdinalIgnoreCase))
-                text->SetText("Replace all incomplete Bingo Squares while keeping completed Bingo Squares and Unlocks.");
             else if (current.StartsWith("Second Chance points can be earned", StringComparison.OrdinalIgnoreCase))
                 text->SetText("Plugin second-chance points change or shuffle incomplete Bingo Squares.");
         }
