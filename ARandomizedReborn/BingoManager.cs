@@ -72,12 +72,15 @@ public sealed unsafe class BingoManager : IDisposable
     private readonly Dictionary<string, nint> pinnedStrings = [];
     private readonly List<MenuRow> menu;
     private readonly List<nint> menuNodes = [];
+    private readonly List<nint> sessionChooserNodes = [];
     private readonly List<nint> cellNodes = [];
     private readonly List<CheckNode> checkNodes = [];
     private readonly List<IAddonEventHandle> events = [];
     private nint menuAddon;
     private bool enabled;
     private bool openedByPlugin;
+    private bool showingSessionChooser;
+    private BingoDifficulty selectedDifficulty = BingoDifficulty.Medium;
     private Action? pendingConfirm;
     private uint confirmAddonId;
     private int centerConfirmFrames;
@@ -93,6 +96,9 @@ public sealed unsafe class BingoManager : IDisposable
 
         this.menu =
         [
+            new(() => "New session...",
+                () => "Choose a difficulty and start a fresh game.",
+                this.OpenSessionChooser),
             new(() => $"Randomizer: {(configuration.EnableRandomizer ? "On" : "Off")}",
                 () => "Turn this off to play normally. Your board and progress are kept and resume when you turn it back on.",
                 () => plugin.SetRandomizerEnabled(!configuration.EnableRandomizer)),
@@ -103,18 +109,8 @@ public sealed unsafe class BingoManager : IDisposable
                     configuration.BingoHintModeEnabled = !configuration.BingoHintModeEnabled;
                     configuration.Save();
                 }),
+            new(() => "Debug", () => "Open the debug window with every check and its state.", plugin.ToggleDebugUi),
         ];
-        foreach (var difficulty in Enum.GetValues<BingoDifficulty>())
-        {
-            this.menu.Add(new(
-                () => $"New session: {difficulty}",
-                () => $"{DifficultyLabel(difficulty)} ({BingoBoard.FreeCheckTarget(difficulty)} free).\nStarting a new session locks every unlock again and shuffles the board.",
-                () => this.Confirm(
-                    $"Start a new {difficulty} session?\nEvery unlock is locked again and the board is shuffled.",
-                    () => plugin.StartNewSession(difficulty))));
-        }
-
-        this.menu.Add(new(() => "Debug", () => "Open the debug window with every check and its state.", plugin.ToggleDebugUi));
 
         this.addonLifecycle.RegisterListener(AddonEvent.PreSetup, AddonName, this.OnSetup);
         this.addonLifecycle.RegisterListener(AddonEvent.PreRefresh, AddonName, this.OnRefresh);
@@ -227,6 +223,12 @@ public sealed unsafe class BingoManager : IDisposable
             dialog->Close(true);
     }
 
+    private void OpenSessionChooser()
+    {
+        this.selectedDifficulty = this.session.Difficulty;
+        this.showingSessionChooser = true;
+    }
+
     /// <summary>Shows the game's Yes/No dialog centered on the board and runs <paramref name="onYes"/> if confirmed.</summary>
     private void Confirm(string text, Action onYes)
     {
@@ -304,6 +306,7 @@ public sealed unsafe class BingoManager : IDisposable
     private void OnFinalize(AddonEvent type, AddonArgs args)
     {
         this.DestroyMenu();
+        this.showingSessionChooser = false;
         this.openedByPlugin = false;
         if (this.pendingConfirm != null)
             CloseConfirmDialog(this.confirmAddonId);
@@ -559,6 +562,58 @@ public sealed unsafe class BingoManager : IDisposable
             }
         }
 
+        var chooserY = new[] { 28, 54, 108, 153, 198, 251, 279 };
+        var chooserHeights = new[] { 24, 51, 43, 43, 43, 24, 24 };
+        for (var index = 0; index < chooserY.Length; index++)
+        {
+            var text = IMemorySpace.GetUISpace()->Create<AtkTextNode>();
+            var node = (AtkResNode*)text;
+            var interactive = index is >= 2 and <= 6;
+            node->Type = NodeType.Text;
+            node->NodeId = MenuNodeIdBase + 0x100 + (uint)index;
+            node->NodeFlags = NodeFlags.AnchorLeft | NodeFlags.AnchorTop | NodeFlags.Visible | NodeFlags.Enabled |
+                              NodeFlags.EmitsEvents;
+            if (interactive)
+                node->NodeFlags |= NodeFlags.RespondToMouse | NodeFlags.HasCollision;
+            node->Color = new ByteColor { R = 255, G = 255, B = 255, A = 255 };
+            node->MultiplyRed = node->MultiplyGreen = node->MultiplyBlue = 100;
+            node->ScaleX = node->ScaleY = 1;
+            node->SetPositionFloat(-30, chooserY[index]);
+            node->SetWidth(236);
+            node->SetHeight((ushort)chooserHeights[index]);
+            text->TextColor = MenuTextColor;
+            text->FontSize = (byte)(index == 0 ? 16 : 13);
+            text->LineSpacing = (byte)(index == 0 ? 24 : 18);
+            text->AlignmentFontType = (byte)AlignmentType.Left;
+            text->TextFlags = TextFlags.MultiLine | TextFlags.WordWrap;
+
+            node->ParentNode = panel;
+            var last = panel->ChildNode;
+            if (last == null)
+            {
+                panel->ChildNode = node;
+            }
+            else
+            {
+                while (last->PrevSiblingNode != null)
+                    last = last->PrevSiblingNode;
+                last->PrevSiblingNode = node;
+                node->NextSiblingNode = last;
+            }
+
+            panel->ChildCount++;
+            node->DrawFlags |= 0xD;
+            this.sessionChooserNodes.Add((nint)node);
+            if (interactive)
+            {
+                foreach (var eventType in new[] { AddonEventType.MouseOver, AddonEventType.MouseOut, AddonEventType.MouseClick })
+                {
+                    if (this.addonEventManager.AddEvent((nint)addon, (nint)node, eventType, this.OnSessionChooserEvent) is { } handle)
+                        this.events.Add(handle);
+                }
+            }
+        }
+
         var weeklyBingo = (AddonWeeklyBingo*)addon;
         for (var index = 0; index < CellCount; index++)
         {
@@ -580,11 +635,25 @@ public sealed unsafe class BingoManager : IDisposable
     private void UpdateMenu()
     {
         for (var index = 0; index < this.menuNodes.Count; index++)
+        {
+            SetVisible((AtkResNode*)this.menuNodes[index], !this.showingSessionChooser);
             SetText((AtkResNode*)this.menuNodes[index], this.menu[index].Label());
+        }
+
+        for (var index = 0; index < this.sessionChooserNodes.Count; index++)
+        {
+            var node = (AtkResNode*)this.sessionChooserNodes[index];
+            SetVisible(node, this.showingSessionChooser);
+            if (this.showingSessionChooser)
+                SetText(node, this.SessionChooserText(index));
+        }
     }
 
     private void OnMenuEvent(AddonEventType type, AddonEventData data)
     {
+        if (this.showingSessionChooser)
+            return;
+
         var index = this.menuNodes.IndexOf(data.NodeTargetPointer);
         if (index < 0)
             return;
@@ -612,6 +681,93 @@ public sealed unsafe class BingoManager : IDisposable
                 UIGlobals.PlaySoundEffect(1);
                 break;
         }
+    }
+
+    private void OnSessionChooserEvent(AddonEventType type, AddonEventData data)
+    {
+        if (!this.showingSessionChooser)
+            return;
+
+        var index = this.sessionChooserNodes.IndexOf(data.NodeTargetPointer);
+        if (index < 2 || index > 6)
+            return;
+
+        var node = (AtkResNode*)data.NodeTargetPointer;
+        var text = (AtkTextNode*)node;
+        switch (type)
+        {
+            case AddonEventType.MouseOver:
+                text->TextColor = MenuHoverColor;
+                node->DrawFlags |= 0x1;
+                this.addonEventManager.SetCursor(AddonCursorType.Clickable);
+                break;
+            case AddonEventType.MouseOut:
+                text->TextColor = MenuTextColor;
+                node->DrawFlags |= 0x1;
+                this.addonEventManager.ResetCursor();
+                break;
+            case AddonEventType.MouseClick:
+                switch (index)
+                {
+                    case 2:
+                        this.selectedDifficulty = BingoDifficulty.Easy;
+                        break;
+                    case 3:
+                        this.selectedDifficulty = BingoDifficulty.Medium;
+                        break;
+                    case 4:
+                        this.selectedDifficulty = BingoDifficulty.Hard;
+                        break;
+                    case 5:
+                        this.BeginSelectedSession();
+                        break;
+                    case 6:
+                        this.showingSessionChooser = false;
+                        break;
+                }
+
+                UIGlobals.PlaySoundEffect(1);
+                break;
+        }
+    }
+
+    private void BeginSelectedSession()
+    {
+        if (!this.session.HasBoard)
+        {
+            this.showingSessionChooser = false;
+            this.plugin.StartNewSession(this.selectedDifficulty);
+            return;
+        }
+
+        this.Confirm(
+            "You already have a session. Starting a new game will erase your current board and all progress.\nAre you sure?",
+            () =>
+            {
+                this.showingSessionChooser = false;
+                this.plugin.StartNewSession(this.selectedDifficulty);
+            });
+    }
+
+    private string SessionChooserText(int index)
+    {
+        var difficulty = index switch
+        {
+            2 => BingoDifficulty.Easy,
+            3 => BingoDifficulty.Medium,
+            4 => BingoDifficulty.Hard,
+            _ => this.selectedDifficulty,
+        };
+
+        return index switch
+        {
+            0 => "Start a new game",
+            1 => "A fresh board is shuffled.\nRewards lock again; progress stays\nuntil the final warning.",
+            2 or 3 or 4 => $"{(difficulty == this.selectedDifficulty ? "●" : "○")} {DifficultyName(difficulty)} ({BingoBoard.FreeCheckTarget(difficulty)} open)\n{DifficultyDescription(difficulty)}",
+            5 => "Confirm",
+            6 => "Cancel",
+            _ => string.Empty,
+        };
     }
 
     /// <summary>Adds a hidden checkmark image on top of a duty icon, inside the duty button component.</summary>
@@ -716,12 +872,20 @@ public sealed unsafe class BingoManager : IDisposable
             node->Destroy(true);
         }
 
-        if (addon != null && this.menuNodes.Count > 0)
+        foreach (var address in this.sessionChooserNodes)
+        {
+            var node = (AtkResNode*)address;
+            Unlink(node);
+            node->Destroy(true);
+        }
+
+        if (addon != null && (this.menuNodes.Count > 0 || this.sessionChooserNodes.Count > 0))
         {
             addon->UldManager.UpdateDrawNodeList();
             addon->UpdateCollisionNodeList(false);
         }
         this.menuNodes.Clear();
+        this.sessionChooserNodes.Clear();
         this.menuAddon = 0;
     }
 
@@ -744,13 +908,22 @@ public sealed unsafe class BingoManager : IDisposable
     private static string UnlockName(UnlockKey key)
         => Unlocks.Definitions.First(unlock => unlock.Key == key).DisplayName;
 
-    private static string DifficultyLabel(BingoDifficulty difficulty)
+    private static string DifficultyName(BingoDifficulty difficulty)
         => difficulty switch
         {
-            BingoDifficulty.Easy => "Easy - lots of checks you can do right away",
-            BingoDifficulty.Medium => "Medium - a mix",
-            BingoDifficulty.Hard => "Hard - exactly one check you can start with",
+            BingoDifficulty.Easy => "Easy",
+            BingoDifficulty.Medium => "Normal",
+            BingoDifficulty.Hard => "Hard",
             _ => difficulty.ToString(),
+        };
+
+    private static string DifficultyDescription(BingoDifficulty difficulty)
+        => difficulty switch
+        {
+            BingoDifficulty.Easy => "Many checks open from the start.",
+            BingoDifficulty.Medium => "Balanced mix of open and gated.",
+            BingoDifficulty.Hard => "Exactly one check open to start.",
+            _ => string.Empty,
         };
 
     private sealed record MenuRow(Func<string> Label, Func<string> Tooltip, Action OnClick);
