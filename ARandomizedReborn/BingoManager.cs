@@ -507,8 +507,8 @@ public sealed unsafe class BingoManager : IDisposable
             builder.Append('\n').Append(cell.RequiredUnlock is { } required
                 ? $"Requires: {UnlockName(required)}{(this.session.IsCellAttemptable(cell) ? " (granted)" : " (still locked)")}"
                 : "No unlock required");
+            builder.Append('\n').Append($"Grants: {UnlockName(cell.Reward)}");
         }
-        builder.Append('\n').Append($"Grants: {UnlockName(cell.Reward)}");
         if (cell.IsComplete)
             builder.Append('\n').Append(cell.ManualOverride ? "Completed (manual override)" : "Completed (auto-detected)");
         else if (definition is { IsFullyAutomatic: false })

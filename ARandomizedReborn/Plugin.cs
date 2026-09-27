@@ -61,8 +61,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public UiRestrictionManager UiRestrictionManager { get; init; }
     public AgentRestrictionManager AgentRestrictionManager { get; init; }
     public TestControl TestControl { get; init; }
-    private MainWindow MainWindow { get; init; }
     private DebugWindow DebugWindow { get; init; }
+    private LauncherWindow LauncherWindow { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
     private readonly Dictionary<nint, ushort> targetedEmotes = [];
 
@@ -112,13 +112,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         AgentRestrictionManager = new AgentRestrictionManager(AgentLifecycle, ToastGui, Configuration);
         AgentRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
 
-        MainWindow = new MainWindow(this);
         DebugWindow = new DebugWindow(this);
+        LauncherWindow = new LauncherWindow(this);
 
         TestControl = new TestControl(this, Configuration, PluginInterface, ToastGui);
 
-        WindowSystem.AddWindow(MainWindow);
         WindowSystem.AddWindow(DebugWindow);
+        WindowSystem.AddWindow(LauncherWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -148,7 +148,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         
         WindowSystem.RemoveAllWindows();
 
-        MainWindow.Dispose();
         DebugWindow.Dispose();
         SprintBlocker.Dispose();
         ObjectiveTracker.Dispose();
@@ -217,7 +216,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             this.targetedEmotes.Remove(address);
     }
 
-    public void ToggleMainUi() => MainWindow.Toggle();
     public void ToggleDebugUi() => DebugWindow.Toggle();
 
     /// <summary>Opens the native Wondrous Tails book showing the randomized board.</summary>
@@ -227,7 +225,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
 
         ToastGui.ShowError("The bingo board uses the Wondrous Tails journal. Pick one up from Khloe Aliapoh in Idyllshire.");
-        MainWindow.IsOpen = true;
     }
 
     public void StartNewSession(BingoDifficulty difficulty, int? seed = null)
@@ -267,16 +264,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         UiRestrictionManager.SetEnabled(enabled);
         AgentRestrictionManager.SetEnabled(enabled);
         Configuration.Save();
-    }
-
-    public IReadOnlyList<UnlockState> GetUnlockStates()
-    {
-        var states = new List<UnlockState>(Unlocks.Definitions.Count);
-        foreach (var definition in Unlocks.Definitions)
-            states.Add(new UnlockState(definition, Unlocks.Get(Configuration, definition.Key)));
-
-        states.Sort((a, b) => string.Compare(a.Definition.DisplayName, b.Definition.DisplayName, StringComparison.OrdinalIgnoreCase));
-        return states;
     }
 
     public void SetUnlockState(UnlockKey key, bool unlocked)

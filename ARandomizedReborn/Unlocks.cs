@@ -25,8 +25,6 @@ public enum UnlockKey
 
 public sealed record UnlockDefinition(UnlockKey Key, string DisplayName, string Description);
 
-public sealed record UnlockState(UnlockDefinition Definition, bool IsUnlocked);
-
 public static class Unlocks
 {
     public static readonly IReadOnlyList<UnlockDefinition> Definitions =
