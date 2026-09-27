@@ -103,12 +103,8 @@ public sealed unsafe class BingoManager : IDisposable
                 () => "Turn this off to play normally. Your board and progress are kept and resume when you turn it back on.",
                 () => plugin.SetRandomizerEnabled(!configuration.EnableRandomizer)),
             new(() => $"Hint mode: {(configuration.BingoHintModeEnabled ? "On" : "Off")}",
-                () => "When on, squares whose required unlock is still locked are tinted red. When off (default), you have to guess.",
-                () =>
-                {
-                    configuration.BingoHintModeEnabled = !configuration.BingoHintModeEnabled;
-                    configuration.Save();
-                }),
+                () => "When enabled, locked requirements tint squares red and appear in their tooltips.",
+                this.ToggleHintMode),
             new(() => "Debug", () => "Open the debug window with every check and its state.", plugin.ToggleDebugUi),
         ];
 
@@ -227,6 +223,20 @@ public sealed unsafe class BingoManager : IDisposable
     {
         this.selectedDifficulty = this.session.Difficulty;
         this.showingSessionChooser = true;
+    }
+
+    private void ToggleHintMode()
+    {
+        var enable = !this.configuration.BingoHintModeEnabled;
+        this.Confirm(
+            enable
+                ? "Enable hint mode? Squares that need an unlock you have not earned are tinted red. Tooltips will show which unlock is required, or that no unlock is needed."
+                : "Disable hint mode? Required-unlock details will be hidden from tooltips and the red tint will be removed.",
+            () =>
+            {
+                this.configuration.BingoHintModeEnabled = enable;
+                this.configuration.Save();
+            });
     }
 
     /// <summary>Shows the game's Yes/No dialog centered on the board and runs <paramref name="onYes"/> if confirmed.</summary>
@@ -474,9 +484,12 @@ public sealed unsafe class BingoManager : IDisposable
         builder.Append(definition?.DisplayName ?? cell.CheckId);
         if (!string.IsNullOrEmpty(definition?.Description))
             builder.Append('\n').Append(definition.Description);
-        builder.Append('\n').Append(cell.RequiredUnlock is { } required
-            ? $"Requires: {UnlockName(required)}{(hintMode ? this.session.IsCellAttemptable(cell) ? " (granted)" : " (still locked)" : string.Empty)}"
-            : "No unlock required");
+        if (hintMode)
+        {
+            builder.Append('\n').Append(cell.RequiredUnlock is { } required
+                ? $"Requires: {UnlockName(required)}{(this.session.IsCellAttemptable(cell) ? " (granted)" : " (still locked)")}"
+                : "No unlock required");
+        }
         builder.Append('\n').Append($"Grants: {UnlockName(cell.Reward)}");
         if (cell.IsComplete)
             builder.Append('\n').Append(cell.ManualOverride ? "Completed (manual override)" : "Completed (auto-detected)");
