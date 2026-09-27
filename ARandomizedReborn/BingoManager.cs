@@ -36,6 +36,8 @@ public sealed unsafe class BingoManager : IDisposable
     private const int MaxSecondChancePoints = 9;
     private const int AgentSelectDuty = 2;
     private const uint DeadlineNodeId = 8;
+    private const uint WindowNodeId = 129;
+    private const uint WindowTitleNodeId = 3;
     private const uint DutyContainerNodeId = 9;
     private const uint DutyBonusNodeId = 13; // second-chance clover inside a duty button
     private const uint DutySealedOverlayNodeId = 12;
@@ -321,6 +323,9 @@ public sealed unsafe class BingoManager : IDisposable
             SetVisible(addon->GetNodeById(nodeId), hasBoard);
 
         SetText(addon->GetNodeById(MessageNodeId), this.BuildMessage());
+        var window = (AtkComponentNode*)addon->GetNodeById(WindowNodeId);
+        if (window != null && window->Component != null)
+            SetText(window->Component->UldManager.SearchNodeById(WindowTitleNodeId), "A Randomized Reborn");
         if (!hasBoard)
             return;
 
