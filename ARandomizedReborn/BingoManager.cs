@@ -53,6 +53,10 @@ public sealed unsafe class BingoManager : IDisposable
     private const uint RewardListTitleNodeId = 63;
     private const uint SecondChanceButtonNodeId = 33;
     private const uint MenuNodeIdBase = 0x52420000;
+    private const uint CheckNodeIdBase = 0x52430000;
+    private const uint CheckIconId = 60081;
+    private const ushort CheckIconSize = 32; // texture size in 1x pixels
+    private const float CheckIconScale = 1f;
     private static readonly uint[] RewardListRowNodeIds = [64, 77, 88, 99];
     private static readonly ByteColor MenuTextColor = new() { R = 0x4A, G = 0x35, B = 0x20, A = 255 };
     private static readonly ByteColor MenuHoverColor = new() { R = 0xA0, G = 0x4A, B = 0x18, A = 255 };
@@ -67,6 +71,7 @@ public sealed unsafe class BingoManager : IDisposable
     private readonly List<MenuRow> menu;
     private readonly List<nint> menuNodes = [];
     private readonly List<nint> cellNodes = [];
+    private readonly List<CheckNode> checkNodes = [];
     private readonly List<IAddonEventHandle> events = [];
     private nint menuAddon;
     private bool enabled;
@@ -378,6 +383,9 @@ public sealed unsafe class BingoManager : IDisposable
                 this.TintCell((AtkResNode*)slot.DutyImage, cell, index, winningLine);
             }
 
+            if (index < this.checkNodes.Count)
+                SetVisible((AtkResNode*)this.checkNodes[index].Node, cell.IsComplete);
+
             // The native tooltip keeps its own copy of the setup text, so point it at the current one.
             if (slot.DutyButton != null && tooltips->TooltipMap.TryGetValue((AtkResNode*)slot.DutyButton->OwnerNode, out var info, false))
                 info.Value->AtkTooltipArgs.TextArgs.Text = this.Pin(this.BuildCellTooltip(cell));
@@ -465,11 +473,12 @@ public sealed unsafe class BingoManager : IDisposable
     {
         var locked = !cell.IsComplete && this.configuration.BingoHintModeEnabled && !this.session.IsCellAttemptable(cell);
         var winning = winningLine?.Contains(index) == true;
-        node->MultiplyRed = 100;
-        node->MultiplyGreen = (byte)(locked ? 45 : 100);
-        node->MultiplyBlue = (byte)(locked ? 45 : 100);
+        var shade = (byte)(cell.IsComplete ? 65 : 100);
+        node->MultiplyRed = shade;
+        node->MultiplyGreen = (byte)(locked ? 45 : shade);
+        node->MultiplyBlue = (byte)(locked ? 45 : shade);
         node->AddRed = (short)(winning ? 60 : 0);
-        node->AddGreen = (short)(winning ? 45 : cell.IsComplete ? 35 : 0);
+        node->AddGreen = (short)(winning ? 45 : 0);
         node->AddBlue = 0;
 
         // The _2 fields are what gets rendered; the buttons' opening timeline keeps them at the native tint for ~20 frames.
@@ -545,6 +554,9 @@ public sealed unsafe class BingoManager : IDisposable
             this.cellNodes.Add((nint)node);
             if (node != null && this.addonEventManager.AddEvent((nint)addon, (nint)node, AddonEventType.ButtonClick, this.OnCellClick) is { } handle)
                 this.events.Add(handle);
+            var image = weeklyBingo->DutySlotList[index].DutyImage;
+            if (button != null && image != null && image->ParentNode != null)
+                this.checkNodes.Add(CreateCheckNode(&button->UldManager, image->ParentNode, index));
         }
 
         addon->UldManager.UpdateDrawNodeList();
@@ -589,6 +601,77 @@ public sealed unsafe class BingoManager : IDisposable
         }
     }
 
+    /// <summary>Adds a hidden checkmark image on top of a duty icon, inside the duty button component.</summary>
+    private static CheckNode CreateCheckNode(AtkUldManager* owner, AtkResNode* parent, int index)
+    {
+        const ushort size = CheckIconSize;
+        const float scale = CheckIconScale;
+        var space = IMemorySpace.GetUISpace();
+        var asset = space->Malloc<AtkUldAsset>();
+        new Span<byte>(asset, sizeof(AtkUldAsset)).Clear();
+        asset->Id = 1;
+        asset->AtkTexture.Ctor();
+        var part = space->Malloc<AtkUldPart>();
+        new Span<byte>(part, sizeof(AtkUldPart)).Clear();
+        part->UldAsset = asset;
+        part->Width = part->Height = size;
+        var parts = space->Malloc<AtkUldPartsList>();
+        new Span<byte>(parts, sizeof(AtkUldPartsList)).Clear();
+        parts->Id = 1;
+        parts->PartCount = 1;
+        parts->Parts = part;
+
+        var image = space->Create<AtkImageNode>();
+        var node = (AtkResNode*)image;
+        node->Type = NodeType.Image;
+        node->NodeId = CheckNodeIdBase + (uint)index;
+        node->NodeFlags = NodeFlags.AnchorLeft | NodeFlags.AnchorTop | NodeFlags.Enabled;
+        node->Color = new ByteColor { R = 255, G = 255, B = 255, A = 255 };
+        node->MultiplyRed = node->MultiplyGreen = node->MultiplyBlue = 100;
+        image->PartsList = parts;
+        image->PartId = 0;
+        image->WrapMode = 1;
+        node->SetWidth(size);
+        node->SetHeight(size);
+        node->SetScale(scale, scale);
+        node->SetPositionFloat((parent->Width - (size * scale)) / 2f, (parent->Height - (size * scale)) / 2f);
+        image->LoadIconTexture(CheckIconId, 0);
+
+        // Appended after the last sibling so it draws above the duty icon and frame.
+        node->ParentNode = parent;
+        var last = parent->ChildNode;
+        if (last == null)
+        {
+            parent->ChildNode = node;
+        }
+        else
+        {
+            while (last->PrevSiblingNode != null)
+                last = last->PrevSiblingNode;
+            last->PrevSiblingNode = node;
+            node->NextSiblingNode = last;
+        }
+
+        parent->ChildCount++;
+        owner->UpdateDrawNodeList();
+        node->DrawFlags |= 0xD;
+        return new CheckNode((nint)node, (nint)owner, (nint)parts, (nint)part, (nint)asset);
+    }
+
+    private static void Unlink(AtkResNode* node)
+    {
+        var parent = node->ParentNode;
+        if (node->NextSiblingNode != null)
+            node->NextSiblingNode->PrevSiblingNode = node->PrevSiblingNode;
+        else if (parent != null && parent->ChildNode == node)
+            parent->ChildNode = node->PrevSiblingNode;
+        if (node->PrevSiblingNode != null)
+            node->PrevSiblingNode->NextSiblingNode = node->NextSiblingNode;
+        if (parent != null && parent->ChildCount > 0)
+            parent->ChildCount--;
+        node->ParentNode = node->PrevSiblingNode = node->NextSiblingNode = null;
+    }
+
     private void DestroyMenu()
     {
         foreach (var handle in this.events)
@@ -596,20 +679,27 @@ public sealed unsafe class BingoManager : IDisposable
         this.events.Clear();
         this.cellNodes.Clear();
 
+        foreach (var check in this.checkNodes)
+        {
+            var image = (AtkImageNode*)check.Node;
+            Unlink((AtkResNode*)image);
+            ((AtkUldManager*)check.Owner)->UpdateDrawNodeList();
+            image->UnloadTexture();
+            image->PartsList = null;
+            ((AtkUldAsset*)check.Asset)->AtkTexture.Destroy(false);
+            IMemorySpace.Free((AtkUldAsset*)check.Asset);
+            IMemorySpace.Free((AtkUldPart*)check.Part);
+            IMemorySpace.Free((AtkUldPartsList*)check.Parts);
+            ((AtkResNode*)image)->Destroy(true);
+        }
+
+        this.checkNodes.Clear();
+
         var addon = (AtkUnitBase*)this.menuAddon;
         foreach (var address in this.menuNodes)
         {
             var node = (AtkResNode*)address;
-            var parent = node->ParentNode;
-            if (node->NextSiblingNode != null)
-                node->NextSiblingNode->PrevSiblingNode = node->PrevSiblingNode;
-            else if (parent != null && parent->ChildNode == node)
-                parent->ChildNode = node->PrevSiblingNode;
-            if (node->PrevSiblingNode != null)
-                node->PrevSiblingNode->NextSiblingNode = node->NextSiblingNode;
-            if (parent != null && parent->ChildCount > 0)
-                parent->ChildCount--;
-            node->ParentNode = node->PrevSiblingNode = node->NextSiblingNode = null;
+            Unlink(node);
             node->Destroy(true);
         }
 
@@ -651,6 +741,8 @@ public sealed unsafe class BingoManager : IDisposable
         };
 
     private sealed record MenuRow(Func<string> Label, Func<string> Tooltip, Action OnClick);
+
+    private readonly record struct CheckNode(nint Node, nint Owner, nint Parts, nint Part, nint Asset);
 
     private void OnBonusInfoRefresh(AddonEvent type, AddonArgs args)
     {
