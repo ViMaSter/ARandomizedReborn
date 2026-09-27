@@ -42,7 +42,7 @@ public class MainWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.Button("Show Bingo Board"))
         {
-            plugin.ToggleBingoUi();
+            plugin.OpenBingoBoard();
         }
 
         ImGui.Spacing();

@@ -37,6 +37,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
+    [PluginService] internal static IAddonEventManager AddonEventManager { get; private set; } = null!;
     [PluginService] internal static IAgentLifecycle AgentLifecycle { get; private set; } = null!;
     [PluginService] internal static Dalamud.Plugin.Services.IGameInventory GameInventory { get; private set; } = null!;
     [PluginService] internal static IMarketBoard MarketBoard { get; private set; } = null!;
@@ -61,7 +62,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public AgentRestrictionManager AgentRestrictionManager { get; init; }
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
-    private BingoWindow BingoWindow { get; init; }
     private DebugWindow DebugWindow { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
     private readonly Dictionary<nint, ushort> targetedEmotes = [];
@@ -103,12 +103,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         JournalManager = new JournalManager(GameGui, AddonLifecycle, AgentLifecycle, DataManager, Configuration, BingoSession, CheckProgressTracker);
         JournalManager.SetEnabled(Configuration.EnableRandomizer);
 
-        BingoWindow = new BingoWindow(this);
-        BingoManager = new BingoManager(
-            AddonLifecycle,
-            BingoSession,
-            () => BingoSession.ReplaceIncompleteCell(BingoSession.Cells.Select((cell, index) => (cell, index)).FirstOrDefault(entry => !entry.cell.IsComplete).index),
-            () => ShuffleIncomplete(BingoSession.Difficulty));
+        BingoManager = new BingoManager(this, AddonLifecycle, AgentLifecycle, AddonEventManager, BingoSession, Configuration);
         BingoManager.SetEnabled(Configuration.EnableRandomizer);
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
@@ -126,16 +121,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
-        WindowSystem.AddWindow(BingoWindow);
         WindowSystem.AddWindow(DebugWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Opens the A Randomized Reborn window."
+            HelpMessage = "Opens the A Randomized Reborn window. \"/randomizer bingo\" opens the bingo board."
         });
         CommandManager.AddHandler(CommandAlias, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Opens the A Randomized Reborn window."
+            HelpMessage = "Opens the A Randomized Reborn window. \"/rand bingo\" opens the bingo board."
         });
 
         // Tell the UI system that we want our windows to be drawn through the window system
@@ -148,7 +142,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
 
         // Adds another button doing the same but for the main ui of the plugin
-        PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
+        PluginInterface.UiBuilder.OpenMainUi += OpenBingoBoard;
     }
 
     public void Dispose()
@@ -158,13 +152,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ChatGui.ChatMessageHandled -= OnChatMessage;
         Framework.Update -= OnFrameworkUpdate;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
-        PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
+        PluginInterface.UiBuilder.OpenMainUi -= OpenBingoBoard;
         
         WindowSystem.RemoveAllWindows();
 
         ConfigWindow.Dispose();
         MainWindow.Dispose();
-        BingoWindow.Dispose();
         DebugWindow.Dispose();
         SprintBlocker.Dispose();
         ObjectiveTracker.Dispose();
@@ -183,8 +176,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnCommand(string command, string args)
     {
-        // In response to the slash command, toggle the display status of our main ui
-        MainWindow.Toggle();
+        if (args.Trim().Equals("bingo", StringComparison.OrdinalIgnoreCase))
+            OpenBingoBoard();
+        else
+            MainWindow.Toggle();
     }
 
     private void OnChatMessage(IChatMessage message)
@@ -238,8 +233,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();
-    public void ToggleBingoUi() => BingoWindow.Toggle();
     public void ToggleDebugUi() => DebugWindow.Toggle();
+
+    /// <summary>Opens the native Wondrous Tails book showing the randomized board.</summary>
+    public void OpenBingoBoard()
+    {
+        if (BingoManager.OpenBoard())
+            return;
+
+        ToastGui.ShowError("The bingo board uses the Wondrous Tails journal. Pick one up from Khloe Aliapoh in Idyllshire.");
+        MainWindow.IsOpen = true;
+    }
 
     public void StartNewSession(BingoDifficulty difficulty)
         => _ = BingoSession.StartNewSessionAsync(difficulty, action => Framework.RunOnFrameworkThread(action));
