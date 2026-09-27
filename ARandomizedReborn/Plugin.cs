@@ -55,7 +55,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public QuestTrackerManager QuestTrackerManager { get; init; }
     public JournalManager JournalManager { get; init; }
     public BingoManager BingoManager { get; init; }
-    public AddonTreeServer AddonTreeServer { get; init; }
     public BingoSession BingoSession { get; init; }
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
@@ -66,7 +65,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private DebugWindow DebugWindow { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
     private readonly Dictionary<nint, ushort> targetedEmotes = [];
-    private readonly DebugCapture debugCapture; // TEMP-CAPTURE
 
     public Plugin()
     {
@@ -112,10 +110,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             () => BingoSession.ReplaceIncompleteCell(BingoSession.Cells.Select((cell, index) => (cell, index)).FirstOrDefault(entry => !entry.cell.IsComplete).index),
             () => ShuffleIncomplete(BingoSession.Difficulty));
         BingoManager.SetEnabled(Configuration.EnableRandomizer);
-
-        AddonTreeServer = new AddonTreeServer(Framework, GameGui, Log);
-        try { AddonTreeServer.Start(65251); } catch { } // TEMP-AUTOSTART
-        debugCapture = new DebugCapture(GameInteropProvider, AddonLifecycle, AgentLifecycle); // TEMP-CAPTURE
 
         ObjectiveTracker = new ObjectiveTracker(GameInteropProvider, DataManager, TargetManager, ObjectTable, CheckProgressTracker);
         ObjectiveTracker.SetEnabled(Configuration.EnableRandomizer);
@@ -176,8 +170,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ObjectiveTracker.Dispose();
         JournalManager.Dispose();
         BingoManager.Dispose();
-        AddonTreeServer.Dispose();
-        debugCapture.Dispose(); // TEMP-CAPTURE
         QuestTrackerManager.Dispose();
         CheckProgressTracker.Dispose();
         BingoSession.Dispose();
