@@ -221,6 +221,7 @@ public sealed unsafe class BingoManager : IDisposable
 
     private void OpenSessionChooser()
     {
+        this.ResetMenuHoverColors();
         this.selectedDifficulty = this.session.Difficulty;
         this.showingSessionChooser = true;
     }
@@ -662,6 +663,19 @@ public sealed unsafe class BingoManager : IDisposable
         }
     }
 
+    private void ResetMenuHoverColors()
+    {
+        foreach (var address in this.menuNodes.Concat(this.sessionChooserNodes))
+        {
+            var node = (AtkResNode*)address;
+            if (node == null || node->Type != NodeType.Text)
+                continue;
+
+            ((AtkTextNode*)node)->TextColor = MenuTextColor;
+            node->DrawFlags |= 0x1;
+        }
+    }
+
     private void OnMenuEvent(AddonEventType type, AddonEventData data)
     {
         if (this.showingSessionChooser)
@@ -690,6 +704,10 @@ public sealed unsafe class BingoManager : IDisposable
                 AtkStage.Instance()->TooltipManager.HideTooltip(addon->Id);
                 break;
             case AddonEventType.MouseClick:
+                text->TextColor = MenuTextColor;
+                node->DrawFlags |= 0x1;
+                this.addonEventManager.ResetCursor();
+                AtkStage.Instance()->TooltipManager.HideTooltip(addon->Id);
                 row.OnClick();
                 UIGlobals.PlaySoundEffect(1);
                 break;
@@ -720,6 +738,11 @@ public sealed unsafe class BingoManager : IDisposable
                 this.addonEventManager.ResetCursor();
                 break;
             case AddonEventType.MouseClick:
+                var addon = (AtkUnitBase*)data.AddonPointer;
+                text->TextColor = MenuTextColor;
+                node->DrawFlags |= 0x1;
+                this.addonEventManager.ResetCursor();
+                AtkStage.Instance()->TooltipManager.HideTooltip(addon->Id);
                 switch (index)
                 {
                     case 2:
@@ -735,6 +758,7 @@ public sealed unsafe class BingoManager : IDisposable
                         this.BeginSelectedSession();
                         break;
                     case 6:
+                        this.ResetMenuHoverColors();
                         this.showingSessionChooser = false;
                         break;
                 }
@@ -748,6 +772,7 @@ public sealed unsafe class BingoManager : IDisposable
     {
         if (!this.session.HasBoard)
         {
+            this.ResetMenuHoverColors();
             this.showingSessionChooser = false;
             this.plugin.StartNewSession(this.selectedDifficulty);
             return;
@@ -757,6 +782,7 @@ public sealed unsafe class BingoManager : IDisposable
             "You already have a session. Starting a new game will erase your current board and all progress.\nAre you sure?",
             () =>
             {
+                this.ResetMenuHoverColors();
                 this.showingSessionChooser = false;
                 this.plugin.StartNewSession(this.selectedDifficulty);
             });
