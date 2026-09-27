@@ -58,6 +58,8 @@ public sealed unsafe class BingoManager : IDisposable
     private const ushort CheckIconSize = 32; // texture size in 1x pixels
     private const float CheckIconScale = 1f;
     private static readonly uint[] RewardListRowNodeIds = [64, 77, 88, 99];
+    private static readonly uint[] LineNodeIds = [36, 38, 40]; // components whose image 2 is a drawn bingo line
+    private const uint LineImageNodeId = 2;
     private static readonly ByteColor MenuTextColor = new() { R = 0x4A, G = 0x35, B = 0x20, A = 255 };
     private static readonly ByteColor MenuHoverColor = new() { R = 0xA0, G = 0x4A, B = 0x18, A = 255 };
 
@@ -333,6 +335,18 @@ public sealed unsafe class BingoManager : IDisposable
         var window = (AtkComponentNode*)addon->GetNodeById(WindowNodeId);
         if (window != null && window->Component != null)
             SetText(window->Component->UldManager.SearchNodeById(WindowTitleNodeId), "A Randomized Reborn");
+
+        // The native book draws lines when they complete but never removes them, e.g. after a new session.
+        if (this.session.WinningLine == null)
+        {
+            foreach (var nodeId in LineNodeIds)
+            {
+                var line = (AtkComponentNode*)addon->GetNodeById(nodeId);
+                if (line != null && line->Component != null)
+                    SetVisible(line->Component->UldManager.SearchNodeById(LineImageNodeId), false);
+            }
+        }
+
         if (!hasBoard)
             return;
 
