@@ -648,19 +648,31 @@ public sealed unsafe class BingoManager : IDisposable
 
     private void UpdateMenu()
     {
+        var collisionListChanged = false;
         for (var index = 0; index < this.menuNodes.Count; index++)
         {
-            SetVisible((AtkResNode*)this.menuNodes[index], !this.showingSessionChooser);
+            var node = (AtkResNode*)this.menuNodes[index];
+            var visible = !this.showingSessionChooser;
+            collisionListChanged |= node->IsVisible() != visible;
+            collisionListChanged |= SetMouseInteractive(node, visible);
+            SetVisible(node, visible);
             SetText((AtkResNode*)this.menuNodes[index], this.menu[index].Label());
         }
 
         for (var index = 0; index < this.sessionChooserNodes.Count; index++)
         {
             var node = (AtkResNode*)this.sessionChooserNodes[index];
-            SetVisible(node, this.showingSessionChooser);
-            if (this.showingSessionChooser)
+            var visible = this.showingSessionChooser;
+            var interactive = visible && index is >= 2 and <= 6;
+            collisionListChanged |= node->IsVisible() != visible;
+            collisionListChanged |= SetMouseInteractive(node, interactive);
+            SetVisible(node, visible);
+            if (visible)
                 SetText(node, this.SessionChooserText(index));
         }
+
+        if (collisionListChanged && this.menuAddon != 0)
+            ((AtkUnitBase*)this.menuAddon)->UpdateCollisionNodeList(false);
     }
 
     private void ResetMenuHoverColors()
@@ -932,6 +944,20 @@ public sealed unsafe class BingoManager : IDisposable
     {
         if (node != null && node->IsVisible() != visible)
             node->ToggleVisibility(visible);
+    }
+
+    private static bool SetMouseInteractive(AtkResNode* node, bool interactive)
+    {
+        var interactionFlags = NodeFlags.RespondToMouse | NodeFlags.HasCollision;
+        var wasInteractive = (node->NodeFlags & interactionFlags) == interactionFlags;
+        if (wasInteractive == interactive)
+            return false;
+
+        if (interactive)
+            node->NodeFlags |= interactionFlags;
+        else
+            node->NodeFlags &= ~interactionFlags;
+        return true;
     }
 
     private static void SetText(AtkResNode* node, string text)
