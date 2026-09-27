@@ -9,6 +9,7 @@ using Dalamud.Game.Agent;
 using Dalamud.Game.Agent.AgentArgTypes;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.Graphics;
 using FFXIVClientStructs.FFXIV.Client.System.Memory;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -30,6 +31,7 @@ public sealed unsafe class BingoManager : IDisposable
     private const uint WondrousTailsItemId = 2002023;
     private const int CellCount = 16;
     private const int CompletionValueStart = 1;
+    private const int TaskStatusValueStart = 18; // PlayerState.WeeklyBingoTaskStatus per square
     private const int DutyValueStart = 44;
     private const int DescriptionValueStart = 78;
     private const int SecondChanceValueIndex = 35;
@@ -469,6 +471,17 @@ public sealed unsafe class BingoManager : IDisposable
         node->AddRed = (short)(winning ? 60 : 0);
         node->AddGreen = (short)(winning ? 45 : cell.IsComplete ? 35 : 0);
         node->AddBlue = 0;
+
+        // The _2 fields are what gets rendered; the buttons' opening timeline keeps them at the native tint for ~20 frames.
+        var parent = node->ParentNode;
+        if (parent == null)
+            return;
+        node->MultiplyRed_2 = (byte)(parent->MultiplyRed_2 * node->MultiplyRed / 100);
+        node->MultiplyGreen_2 = (byte)(parent->MultiplyGreen_2 * node->MultiplyGreen / 100);
+        node->MultiplyBlue_2 = (byte)(parent->MultiplyBlue_2 * node->MultiplyBlue / 100);
+        node->AddRed_2 = (short)(parent->AddRed_2 + node->AddRed);
+        node->AddGreen_2 = (short)(parent->AddGreen_2 + node->AddGreen);
+        node->AddBlue_2 = (short)(parent->AddBlue_2 + node->AddBlue);
     }
 
     private void EnsureMenu(AtkUnitBase* addon)
@@ -744,6 +757,7 @@ public sealed unsafe class BingoManager : IDisposable
         {
             var cell = this.session.Cells[index];
             values[CompletionValueStart + index].SetBool(cell.IsComplete);
+            values[TaskStatusValueStart + index].SetUInt((uint)PlayerState.WeeklyBingoTaskStatus.Open);
             values[DutyValueStart + index].SetUInt((uint)(index + 1));
             SetString(values + DescriptionValueStart + index, this.BuildCellTooltip(cell));
         }
