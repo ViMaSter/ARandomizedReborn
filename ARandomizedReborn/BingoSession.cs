@@ -178,7 +178,7 @@ public sealed class BingoSession : IDisposable
     }
 
     /// <summary>Generates a new board off the main thread, then locks everything and applies it.</summary>
-    public async Task StartNewSessionAsync(BingoDifficulty difficulty, Func<Action, Task> runOnGameThread)
+    public async Task StartNewSessionAsync(BingoDifficulty difficulty, Func<Action, Task> runOnGameThread, int? seed = null)
     {
         if (this.IsGenerating)
             return;
@@ -196,7 +196,7 @@ public sealed class BingoSession : IDisposable
             var progress = new Progress<BingoGenerationProgress>(value => this.Progress = value);
             var result = await BingoBoard.GenerateAsync(
                 difficulty,
-                Environment.TickCount ^ Guid.NewGuid().GetHashCode(),
+                seed ?? (Environment.TickCount ^ Guid.NewGuid().GetHashCode()),
                 progress,
                 this.generationCancellation.Token).ConfigureAwait(false);
 

@@ -60,6 +60,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
     public AgentRestrictionManager AgentRestrictionManager { get; init; }
+    public TestControl TestControl { get; init; }
     private MainWindow MainWindow { get; init; }
     private DebugWindow DebugWindow { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
@@ -114,6 +115,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         MainWindow = new MainWindow(this);
         DebugWindow = new DebugWindow(this);
 
+        TestControl = new TestControl(this, Configuration, PluginInterface, ToastGui);
+
         WindowSystem.AddWindow(MainWindow);
         WindowSystem.AddWindow(DebugWindow);
 
@@ -157,6 +160,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         InteractionRestrictionManager.Dispose();
         UiRestrictionManager.Dispose();
         AgentRestrictionManager.Dispose();
+        TestControl.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(CommandAlias);
@@ -226,8 +230,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         MainWindow.IsOpen = true;
     }
 
-    public void StartNewSession(BingoDifficulty difficulty)
-        => _ = BingoSession.StartNewSessionAsync(difficulty, action => Framework.RunOnFrameworkThread(action));
+    public void StartNewSession(BingoDifficulty difficulty, int? seed = null)
+        => _ = BingoSession.StartNewSessionAsync(difficulty, action => Framework.RunOnFrameworkThread(action), seed);
 
     public void ShuffleIncomplete(BingoDifficulty difficulty)
         => _ = BingoSession.ShuffleIncompleteAsync(difficulty, action => Framework.RunOnFrameworkThread(action));

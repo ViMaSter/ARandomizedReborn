@@ -2,4 +2,6 @@
   <Project Path="ARandomizedReborn/ARandomizedReborn.csproj">
     <Platform Project="x64" />
   </Project>
+  <Project Path="ARandomizedReborn.Tests/ARandomizedReborn.Tests.csproj" />
+  <Project Path="../FFXIVTestKit/FFXIVTestKit.csproj" />
 </Solution>
