@@ -125,11 +125,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Opens the A Randomized Reborn window. \"/randomizer bingo\" opens the bingo board."
+            HelpMessage = "Opens the A Randomized Reborn bingo board."
         });
         CommandManager.AddHandler(CommandAlias, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Opens the A Randomized Reborn window. \"/rand bingo\" opens the bingo board."
+            HelpMessage = "Opens the A Randomized Reborn bingo board."
         });
 
         // Tell the UI system that we want our windows to be drawn through the window system
@@ -174,13 +174,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandAlias);
     }
 
-    private void OnCommand(string command, string args)
-    {
-        if (args.Trim().Equals("bingo", StringComparison.OrdinalIgnoreCase))
-            OpenBingoBoard();
-        else
-            MainWindow.Toggle();
-    }
+    private void OnCommand(string command, string args) => OpenBingoBoard();
 
     private void OnChatMessage(IChatMessage message)
     {

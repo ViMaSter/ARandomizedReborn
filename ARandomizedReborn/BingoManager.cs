@@ -358,15 +358,21 @@ public sealed unsafe class BingoManager : IDisposable
             {
                 slot.DutyImage->LoadIconTexture(definition?.JournalIcon ?? 61419, 0);
                 slot.DutyImage->Color.A = 255;
-                slot.DutyImage->Width = 40;
-                slot.DutyImage->Height = 40;
-                slot.DutyImage->ScaleX = 1;
-                slot.DutyImage->ScaleY = 1;
+                // Setters (not raw fields) so the node is flagged dirty and its screen transform is recomputed.
+                var image = (AtkResNode*)slot.DutyImage;
+                if (image->Width != 40)
+                    image->SetWidth(40);
+                if (image->Height != 40)
+                    image->SetHeight(40);
+                if (image->ScaleX != 1 || image->ScaleY != 1)
+                    image->SetScale(1, 1);
                 var container = slot.DutyResNode;
                 var containerWidth = container == null ? 72 : container->Width;
                 var containerHeight = container == null ? 44 : container->Height;
-                slot.DutyImage->X = (containerWidth - slot.DutyImage->Width) / 2f;
-                slot.DutyImage->Y = (containerHeight - slot.DutyImage->Height) / 2f;
+                var x = (containerWidth - image->Width) / 2f;
+                var y = (containerHeight - image->Height) / 2f;
+                if (image->X != x || image->Y != y)
+                    image->SetPositionFloat(x, y);
                 this.TintCell((AtkResNode*)slot.DutyImage, cell, index, winningLine);
             }
 
