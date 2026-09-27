@@ -35,7 +35,7 @@ public sealed unsafe class BingoManager : IDisposable
     private const int DutyValueStart = 44;
     private const int DescriptionValueStart = 78;
     private const int SecondChanceValueIndex = 35;
-    private const int MaxSecondChancePoints = 9;
+    private const int MaxSecondChancePoints = BingoSession.MaxSecondChancePoints;
     private const int AgentSelectDuty = 2;
     private const uint DeadlineNodeId = 8;
     private const uint WindowNodeId = 129;
@@ -114,7 +114,6 @@ public sealed unsafe class BingoManager : IDisposable
                     () => plugin.StartNewSession(difficulty))));
         }
 
-        this.menu.Add(new(() => "Settings", () => "Open the plugin settings.", plugin.ToggleConfigUi));
         this.menu.Add(new(() => "Debug", () => "Open the debug window with every check and its state.", plugin.ToggleDebugUi));
 
         this.addonLifecycle.RegisterListener(AddonEvent.PreSetup, AddonName, this.OnSetup);

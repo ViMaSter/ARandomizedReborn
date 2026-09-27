@@ -34,12 +34,6 @@ public class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
-        if (ImGui.Button("Show Settings"))
-        {
-            plugin.ToggleConfigUi();
-        }
-
-        ImGui.SameLine();
         if (ImGui.Button("Show Bingo Board"))
         {
             plugin.OpenBingoBoard();

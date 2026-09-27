@@ -51,9 +51,10 @@ public sealed unsafe class SprintBlocker : IDisposable
     public bool UnlockMounts { get; set; }
     public bool UnlockGatherers { get; set; }
     public bool UnlockCrafters { get; set; }
+    // Nothing lowers this yet, so enabling the randomizer keeps every skill of the current level.
     public int SkillLevelCap { get; set; } = 100;
-    public int HighlightRed { get; set; } = 64;
-    public int HighlightMultiply { get; set; } = 65;
+    public int HighlightRed { get; set; } = 90;
+    public int HighlightMultiply { get; set; } = 30;
 
     public uint TeleportGeneralActionId => this.teleportGeneralActionId;
     public uint ReturnGeneralActionId => this.returnGeneralActionId;

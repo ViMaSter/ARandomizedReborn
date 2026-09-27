@@ -9,7 +9,6 @@ public class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 0;
 
-    public bool IsConfigWindowMovable { get; set; } = true;
     public bool EnableRandomizer { get; set; } = false;
     public bool DisableSprint { get; set; } = false;
     public bool UnlockHousing { get; set; } = false;
@@ -37,11 +36,8 @@ public class Configuration : IPluginConfiguration
     public HashSet<string> EverTriggeredChecks { get; set; } = [];
     public Dictionary<string, Dictionary<string, int>> CheckStepProgress { get; set; } = [];
     public bool BingoWon { get; set; } = false;
-    public int BingoSecondChancePoints { get; set; } = 9;
+    public int BingoSecondChancePoints { get; set; } = BingoSession.MaxSecondChancePoints;
     public bool BingoHintModeEnabled { get; set; } = false;
-    public int SkillLevelCap { get; set; } = 100;
-    public int SprintHighlightRed { get; set; } = 90;
-    public int SprintHighlightMultiply { get; set; } = 30;
 
     // The below exists just to make saving less cumbersome
     public void Save()

@@ -22,6 +22,8 @@ public sealed class BingoSession : IDisposable
         this.notify = notify;
     }
 
+    public const int MaxSecondChancePoints = 9;
+
     public IReadOnlyList<BingoCell> Cells => this.configuration.BingoBoard;
 
     public bool HasBoard => this.configuration.BingoBoard.Count == BingoBoard.CellCount;
@@ -292,6 +294,7 @@ public sealed class BingoSession : IDisposable
         this.configuration.ManuallyCompletedChecks.Clear();
         this.configuration.CheckStepProgress.Clear();
         this.configuration.BingoWon = false;
+        this.configuration.BingoSecondChancePoints = MaxSecondChancePoints;
         this.LockEverything();
         this.configuration.Save();
     }

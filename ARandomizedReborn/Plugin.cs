@@ -60,7 +60,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public InteractionRestrictionManager InteractionRestrictionManager { get; init; }
     public UiRestrictionManager UiRestrictionManager { get; init; }
     public AgentRestrictionManager AgentRestrictionManager { get; init; }
-    private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
     private DebugWindow DebugWindow { get; init; }
     private readonly Dictionary<ushort, string> emoteNames = [];
@@ -82,9 +81,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             UnlockMounts = Configuration.UnlockMounts,
             UnlockGatherers = Configuration.UnlockGatherers,
             UnlockCrafters = Configuration.UnlockCrafters,
-            SkillLevelCap = Configuration.SkillLevelCap,
-            HighlightRed = Configuration.SprintHighlightRed,
-            HighlightMultiply = Configuration.SprintHighlightMultiply,
         };
 
         BingoSession = new BingoSession(Configuration, ApplyUnlockState, Notify);
@@ -115,11 +111,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         AgentRestrictionManager = new AgentRestrictionManager(AgentLifecycle, ToastGui, Configuration);
         AgentRestrictionManager.SetEnabled(Configuration.EnableRandomizer);
 
-        ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
         DebugWindow = new DebugWindow(this);
 
-        WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
         WindowSystem.AddWindow(DebugWindow);
 
@@ -137,10 +131,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ChatGui.ChatMessageHandled += OnChatMessage;
         Framework.Update += OnFrameworkUpdate;
 
-        // This adds a button to the plugin installer entry of this plugin which allows
-        // toggling the display status of the configuration ui
-        PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
-
         // Adds another button doing the same but for the main ui of the plugin
         PluginInterface.UiBuilder.OpenMainUi += OpenBingoBoard;
     }
@@ -151,12 +141,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         ChatGui.ChatMessageHandled -= OnChatMessage;
         Framework.Update -= OnFrameworkUpdate;
-        PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= OpenBingoBoard;
         
         WindowSystem.RemoveAllWindows();
 
-        ConfigWindow.Dispose();
         MainWindow.Dispose();
         DebugWindow.Dispose();
         SprintBlocker.Dispose();
@@ -225,7 +213,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             this.targetedEmotes.Remove(address);
     }
 
-    public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();
     public void ToggleDebugUi() => DebugWindow.Toggle();
 
